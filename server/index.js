@@ -3,9 +3,10 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { pickExecutable, pickFolder } from './lib/dialogs.js'
+import { pickExecutable } from './lib/dialogs.js'
 import { listDrives } from './lib/drives.js'
 import { HttpError } from './lib/errors.js'
+import { getQuickLocations, listDirectory } from './lib/filebrowser.js'
 import { scanDirectory } from './lib/scanner.js'
 import { MAX_TORRENT_BYTES, parseTorrentBuffer } from './lib/torrent.js'
 import {
@@ -258,14 +259,18 @@ app.post(
   }),
 )
 
-app.post(
-  '/api/dialog/folder',
+app.get(
+  '/api/fs/list',
   asyncRoute(async (req, res) => {
-    const title =
-      typeof req.body?.title === 'string' && req.body.title.trim()
-        ? req.body.title.trim()
-        : '选择要扫描的文件夹'
-    res.json(await pickFolder(title))
+    const target = requireAbsolutePath(req.query?.path, '文件夹路径')
+    res.json(await listDirectory(target))
+  }),
+)
+
+app.get(
+  '/api/fs/locations',
+  asyncRoute(async (req, res) => {
+    res.json({ locations: await getQuickLocations() })
   }),
 )
 

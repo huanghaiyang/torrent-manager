@@ -15,6 +15,7 @@ import {
 import AppSidebar from './components/AppSidebar.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import DetailsDrawer from './components/DetailsDrawer.vue'
+import FolderPickerDialog from './components/FolderPickerDialog.vue'
 import ScanProgress from './components/ScanProgress.vue'
 import ToastHost from './components/ToastHost.vue'
 import ToolsDialog from './components/ToolsDialog.vue'
@@ -40,6 +41,7 @@ const torrents = ref([])
 const tools = ref([])
 const defaultToolId = ref('system')
 const toolsOpen = ref(false)
+const folderPickerOpen = ref(false)
 const mobileSidebarOpen = ref(false)
 const selectedPath = ref(null)
 const searchInput = ref(null)
@@ -508,16 +510,17 @@ function stopScan() {
   scanController?.abort()
 }
 
-async function chooseFolder() {
+function chooseFolder() {
   if (scanning.active) return
-  try {
-    const result = await api.pickFolder()
-    if (result.canceled || !result.path) return
-    scanPath.value = result.path
-    notify('已选择文件夹，点击「扫描」开始', 'info', { timeout: 2600 })
-  } catch (error) {
-    notify(error.message, 'error')
-  }
+  mobileSidebarOpen.value = false
+  folderPickerOpen.value = true
+}
+
+function handleFolderSelected(folderPath) {
+  folderPickerOpen.value = false
+  if (!folderPath) return
+  scanPath.value = folderPath
+  notify('已选择文件夹，点击「扫描」开始', 'info', { timeout: 2600 })
 }
 
 async function loadDrives(refresh = false) {
@@ -668,6 +671,7 @@ function isTypingTarget(target) {
 }
 
 function onGlobalKeydown(event) {
+  if (folderPickerOpen.value || toolsOpen.value) return
   const typing = isTypingTarget(event.target)
   if ((event.key === '/' && !typing) || ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k')) {
     event.preventDefault()
@@ -907,6 +911,14 @@ onBeforeUnmount(() => {
       @close="toolsOpen = false"
       @updated="handleToolsPayload"
       @notify="notify"
+    />
+
+    <FolderPickerDialog
+      v-if="folderPickerOpen"
+      :initial-path="scanPath"
+      :drives="drives"
+      @close="folderPickerOpen = false"
+      @select="handleFolderSelected"
     />
 
     <ConfirmDialog

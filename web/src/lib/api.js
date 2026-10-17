@@ -48,8 +48,9 @@ export const api = {
       method: 'POST',
       body: { path: torrentPath },
     }),
-  pickFolder: () =>
-    request('/api/dialog/folder', { method: 'POST', body: {} }),
+  listDirectory: (dirPath) =>
+    request(`/api/fs/list?path=${encodeURIComponent(dirPath)}`),
+  getQuickLocations: () => request('/api/fs/locations'),
   pickExecutable: () =>
     request('/api/dialog/file', { method: 'POST', body: {} }),
   addCustomTool: (tool) =>

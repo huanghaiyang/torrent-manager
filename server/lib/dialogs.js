@@ -11,29 +11,7 @@ function parseSelectedPath(stdout) {
   return cleaned || null
 }
 
-export async function pickFolder(title = '选择要扫描的文件夹') {
-  if (process.platform !== 'win32') {
-    throw new HttpError(501, '当前系统不支持原生文件夹选择，请直接输入路径')
-  }
-
-  try {
-    const { stdout } = await runPowerShellFile(path.join(SCRIPTS_DIR, 'pick-folder.ps1'), {
-      sta: true,
-      windowsHide: false,
-      timeout: 300_000,
-    })
-    const selected = parseSelectedPath(stdout)
-    if (!selected || !path.isAbsolute(selected)) {
-      return { canceled: true, path: null }
-    }
-    return { canceled: false, path: path.normalize(selected) }
-  } catch (error) {
-    if (error.killed) throw new HttpError(408, '选择文件夹超时，请重试')
-    throw new HttpError(500, `无法打开文件夹选择窗口：${error.message}`)
-  }
-}
-
-export async function pickExecutable(title = '选择第三方工具') {
+export async function pickExecutable() {
   if (process.platform !== 'win32') {
     throw new HttpError(501, '当前系统不支持原生文件选择，请直接输入程序路径')
   }
