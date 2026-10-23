@@ -8,6 +8,7 @@ import {
   ListTree,
   LoaderCircle,
   Play,
+  Star,
 } from 'lucide-vue-next'
 import OpenWithMenu from './OpenWithMenu.vue'
 import {
@@ -21,6 +22,7 @@ const props = defineProps({
   torrent: { type: Object, required: true },
   parsed: { type: Object, default: null },
   parseState: { type: Object, default: null },
+  cover: { type: Object, default: null },
   tools: { type: Array, default: () => [] },
   defaultToolId: { type: String, default: 'system' },
   selected: { type: Boolean, default: false },
@@ -31,6 +33,7 @@ const emit = defineEmits([
   'parse',
   'open',
   'reveal',
+  'preview-cover',
   'manage-tools',
 ])
 
@@ -50,8 +53,28 @@ const sizeMain = computed(() =>
   props.parsed ? formatBytes(props.parsed.totalSize) : formatBytes(props.torrent.size),
 )
 
+const ratingValue = computed(() =>
+  typeof props.cover?.rating === 'number' ? props.cover.rating : null,
+)
+
+const ratingClass = computed(() => {
+  if (ratingValue.value === null) return ''
+  if (ratingValue.value >= 8.5) return 'is-high'
+  if (ratingValue.value >= 7) return 'is-mid'
+  return 'is-low'
+})
+
 function openDetails() {
   emit('open-details', props.torrent)
+}
+
+function previewCover() {
+  if (!props.cover?.cover) return
+  emit('preview-cover', {
+    src: props.cover.cover,
+    title: props.cover.title || displayName.value,
+    pageUrl: props.cover.pageUrl || '',
+  })
 }
 
 function parse() {
@@ -82,23 +105,33 @@ function reveal() {
     :class="{ selected, 'is-parsed': parsed }"
     @click="openDetails"
   >
-    <button
-      class="file-cell"
-      type="button"
-      :title="torrent.path"
-      @click.stop="openDetails"
-    >
-      <span class="file-icon">
+    <div class="file-cell">
+      <button
+        v-if="cover"
+        class="file-icon has-cover"
+        type="button"
+        title="查看封面大图"
+        aria-label="查看封面大图"
+        @click.stop="previewCover"
+      >
+        <img
+          :src="cover.cover"
+          :alt="cover.title || displayName"
+          loading="lazy"
+          referrerpolicy="no-referrer"
+        />
+      </button>
+      <span v-else class="file-icon">
         <FileArchive :size="17" />
       </span>
-      <span class="file-copy">
+      <button class="file-copy" type="button" :title="torrent.path" @click.stop="openDetails">
         <span class="file-title-line">
           <span class="file-name">{{ displayName }}</span>
           <span v-if="parsed" class="parsed-badge">已解析</span>
         </span>
         <span class="file-sub" :title="torrent.path">{{ torrent.path }}</span>
-      </span>
-    </button>
+      </button>
+    </div>
 
     <div class="size-cell">
       <span class="size-main">{{ sizeMain }}</span>
@@ -111,6 +144,14 @@ function reveal() {
       <span class="source-chip" :title="torrent.source">
         {{ sourceName }}
       </span>
+    </div>
+
+    <div class="rating-cell" title="游民星空玩家评分">
+      <span v-if="ratingValue !== null" class="rating-chip" :class="ratingClass">
+        <Star :size="10" fill="currentColor" />
+        {{ ratingValue.toFixed(1) }}
+      </span>
+      <span v-else class="rating-empty">—</span>
     </div>
 
     <div class="date-cell">
@@ -182,7 +223,7 @@ function reveal() {
 <style scoped>
 .torrent-row {
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) 128px 118px 142px 258px;
+  grid-template-columns: minmax(260px, 1fr) 128px 118px 86px 142px 258px;
   align-items: center;
   gap: 14px;
   min-height: 68px;
@@ -242,12 +283,43 @@ function reveal() {
   background: var(--accent-soft);
 }
 
+.file-icon.has-cover {
+  width: 38px;
+  height: 50px;
+  overflow: hidden;
+  padding: 0;
+  border-color: rgba(167, 139, 250, 0.24);
+  border-radius: 7px;
+  background: rgba(9, 13, 20, 0.9);
+  cursor: zoom-in;
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.file-icon.has-cover:hover {
+  border-color: rgba(94, 234, 212, 0.45);
+  box-shadow: 0 0 0 2px rgba(45, 212, 191, 0.12);
+}
+
+.file-icon.has-cover img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
 .file-copy {
   display: flex;
   min-width: 0;
   flex: 1;
   flex-direction: column;
   gap: 2px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
 }
 
 .file-title-line {
@@ -319,6 +391,50 @@ function reveal() {
 
 .source-cell {
   min-width: 0;
+}
+
+.rating-cell {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.rating-chip {
+  display: inline-flex;
+  height: 22px;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.rating-chip.is-high {
+  border-color: rgba(52, 211, 153, 0.22);
+  background: rgba(52, 211, 153, 0.1);
+  color: #86efac;
+}
+
+.rating-chip.is-mid {
+  border-color: rgba(167, 139, 250, 0.22);
+  background: rgba(167, 139, 250, 0.1);
+  color: #c4b5fd;
+}
+
+.rating-chip.is-low {
+  border-color: var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+}
+
+.rating-empty {
+  color: var(--muted-2);
+  font-family: var(--mono);
+  font-size: 11px;
 }
 
 .source-chip {
@@ -407,7 +523,7 @@ function reveal() {
 
 @media (max-width: 1280px) {
   .torrent-row {
-    grid-template-columns: minmax(240px, 1fr) 118px 132px 248px;
+    grid-template-columns: minmax(240px, 1fr) 118px 86px 132px 248px;
   }
 
   .source-cell {
@@ -417,7 +533,7 @@ function reveal() {
 
 @media (max-width: 900px) {
   .torrent-row {
-    grid-template-columns: minmax(200px, 1fr) 108px 240px;
+    grid-template-columns: minmax(200px, 1fr) 108px 78px 240px;
     gap: 10px;
   }
 
@@ -448,6 +564,11 @@ function reveal() {
 
   .size-sub {
     display: none;
+  }
+
+  .rating-cell {
+    grid-column: 2;
+    align-self: center;
   }
 
   .source-cell,

@@ -20,6 +20,7 @@ import {
   Play,
   RefreshCw,
   Search,
+  Star,
   X,
 } from 'lucide-vue-next'
 import OpenWithMenu from './OpenWithMenu.vue'
@@ -35,11 +36,20 @@ const props = defineProps({
   torrent: { type: Object, default: null },
   parsed: { type: Object, default: null },
   parseState: { type: Object, default: null },
+  cover: { type: Object, default: null },
   tools: { type: Array, default: () => [] },
   defaultToolId: { type: String, default: 'system' },
 })
 
-const emit = defineEmits(['close', 'parse', 'open', 'reveal', 'manage-tools', 'notify'])
+const emit = defineEmits([
+  'close',
+  'parse',
+  'open',
+  'reveal',
+  'preview-cover',
+  'manage-tools',
+  'notify',
+])
 
 const closeButton = ref(null)
 const activeTab = ref('files')
@@ -60,6 +70,26 @@ const error = computed(() => (props.parsed ? null : props.parseState?.error || n
 const defaultToolName = computed(
   () => props.tools.find((tool) => tool.id === props.defaultToolId)?.name || '系统默认应用',
 )
+
+const coverRating = computed(() =>
+  typeof props.cover?.rating === 'number' ? props.cover.rating : null,
+)
+
+const coverRatingClass = computed(() => {
+  if (coverRating.value === null) return ''
+  if (coverRating.value >= 8.5) return 'is-high'
+  if (coverRating.value >= 7) return 'is-mid'
+  return 'is-low'
+})
+
+function previewCover() {
+  if (!props.cover?.cover) return
+  emit('preview-cover', {
+    src: props.cover.cover,
+    title: props.cover.title || props.parsed?.name || props.torrent?.fileName || '',
+    pageUrl: props.cover.pageUrl || '',
+  })
+}
 
 const versionLabel = computed(() => {
   const version = props.parsed?.version
@@ -162,12 +192,39 @@ onBeforeUnmount(() => {
       <div v-if="torrent" class="drawer-layer" @mousedown.self="emit('close')">
         <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
           <header class="drawer-header">
-            <div class="drawer-icon">
+            <button
+              v-if="cover"
+              class="drawer-icon has-cover"
+              type="button"
+              title="查看封面大图"
+              aria-label="查看封面大图"
+              @click="previewCover"
+            >
+              <img
+                :src="cover.cover"
+                :alt="cover.title || parsed?.name || torrent.fileName"
+                :title="cover.title || ''"
+                referrerpolicy="no-referrer"
+              />
+            </button>
+            <div v-else class="drawer-icon">
               <FileArchive :size="21" />
             </div>
             <div class="drawer-heading">
               <h2 id="drawer-title">{{ parsed?.name || torrent.fileName }}</h2>
               <p :title="torrent.path">{{ torrent.path }}</p>
+              <span v-if="cover?.title || coverRating !== null" class="cover-meta">
+                <span
+                  v-if="coverRating !== null"
+                  class="cover-rating"
+                  :class="coverRatingClass"
+                  title="游民星空玩家评分"
+                >
+                  <Star :size="10" fill="currentColor" />
+                  {{ coverRating.toFixed(1) }}
+                </span>
+                <span v-if="cover?.title" class="cover-title">封面：{{ cover.title }}</span>
+              </span>
             </div>
             <button ref="closeButton" class="icon-btn close-btn" type="button" aria-label="关闭详情" @click="emit('close')">
               <X :size="18" />
@@ -521,11 +578,86 @@ onBeforeUnmount(() => {
   width: 44px;
   height: 44px;
   flex: none;
+  padding: 0;
   place-items: center;
   border: 1px solid rgba(94, 234, 212, 0.22);
   border-radius: 12px;
   background: var(--accent-soft);
   color: var(--accent);
+}
+
+.drawer-icon.has-cover {
+  width: 60px;
+  height: 80px;
+  overflow: hidden;
+  border-color: rgba(167, 139, 250, 0.24);
+  border-radius: 10px;
+  background: rgba(9, 13, 20, 0.9);
+  cursor: zoom-in;
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.drawer-icon.has-cover:hover {
+  border-color: rgba(94, 234, 212, 0.45);
+  box-shadow: 0 0 0 2px rgba(45, 212, 191, 0.12);
+}
+
+.drawer-icon.has-cover img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.cover-meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.cover-rating {
+  display: inline-flex;
+  height: 19px;
+  flex: none;
+  align-items: center;
+  gap: 3px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.cover-rating.is-high {
+  border-color: rgba(52, 211, 153, 0.22);
+  background: rgba(52, 211, 153, 0.1);
+  color: #86efac;
+}
+
+.cover-rating.is-mid {
+  border-color: rgba(167, 139, 250, 0.22);
+  background: rgba(167, 139, 250, 0.1);
+  color: #c4b5fd;
+}
+
+.cover-rating.is-low {
+  border-color: var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+}
+
+.cover-title {
+  display: block;
+  overflow: hidden;
+  color: var(--muted-2);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .drawer-heading {

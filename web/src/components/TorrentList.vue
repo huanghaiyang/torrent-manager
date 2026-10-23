@@ -1,17 +1,30 @@
 <script setup>
-import { FolderOpen, LoaderCircle, Magnet, Radar, SearchX } from 'lucide-vue-next'
+import {
+  FileArchive,
+  FolderOpen,
+  FolderSearch,
+  LoaderCircle,
+  Magnet,
+  Play,
+  Radar,
+  SearchX,
+  Star,
+} from 'lucide-vue-next'
 import TorrentRow from './TorrentRow.vue'
+import { formatBytes, sourceLabel } from '../lib/format.js'
 
-defineProps({
+const props = defineProps({
   torrents: { type: Array, default: () => [] },
   parseCache: { type: Map, default: () => new Map() },
   parseStates: { type: Map, default: () => new Map() },
+  covers: { type: Map, default: () => new Map() },
   tools: { type: Array, default: () => [] },
   defaultToolId: { type: String, default: 'system' },
   scanning: { type: Boolean, default: false },
   hasFilters: { type: Boolean, default: false },
   scanPath: { type: String, default: '' },
   total: { type: Number, default: 0 },
+  viewMode: { type: String, default: 'list' },
 })
 
 const emit = defineEmits([
@@ -19,38 +32,150 @@ const emit = defineEmits([
   'parse',
   'open',
   'reveal',
+  'preview-cover',
   'manage-tools',
   'browse',
   'scan',
   'clear-filters',
 ])
+
+function coverOf(torrent) {
+  return props.covers.get(torrent.path) || null
+}
+
+function titleOf(torrent) {
+  return props.parseCache.get(torrent.path)?.name || torrent.fileName
+}
+
+function ratingOf(torrent) {
+  const rating = coverOf(torrent)?.rating
+  return typeof rating === 'number' ? rating : null
+}
+
+function ratingClass(value) {
+  if (value >= 8.5) return 'is-high'
+  if (value >= 7) return 'is-mid'
+  return 'is-low'
+}
+
+function sizeOf(torrent) {
+  const parsed = props.parseCache.get(torrent.path)
+  return formatBytes(parsed?.totalSize ?? torrent.size)
+}
+
+function previewCover(torrent) {
+  const cover = coverOf(torrent)
+  if (!cover?.cover) return
+  emit('preview-cover', {
+    src: cover.cover,
+    title: cover.title || titleOf(torrent),
+    pageUrl: cover.pageUrl || '',
+  })
+}
 </script>
 
 <template>
   <section class="library-card">
-    <div class="list-head">
+    <div v-if="viewMode === 'list'" class="list-head">
       <span>种子文件</span>
       <span>大小</span>
       <span>来源</span>
+      <span>评分</span>
       <span>修改时间</span>
       <span class="head-actions">操作</span>
     </div>
 
-    <div v-if="torrents.length" class="list-body">
-      <TorrentRow
-        v-for="torrent in torrents"
-        :key="torrent.path"
-        :torrent="torrent"
-        :parsed="parseCache.get(torrent.path) || null"
-        :parse-state="parseStates.get(torrent.path) || null"
-        :tools="tools"
-        :default-tool-id="defaultToolId"
-        @open-details="emit('open-details', $event)"
-        @parse="emit('parse', $event)"
-        @open="emit('open', $event)"
-        @reveal="emit('reveal', $event)"
-        @manage-tools="emit('manage-tools')"
-      />
+    <div v-if="torrents.length">
+      <div v-if="viewMode === 'grid'" class="grid-body">
+        <article
+          v-for="torrent in torrents"
+          :key="torrent.path"
+          class="grid-card"
+          @click="emit('open-details', torrent)"
+        >
+          <div class="grid-cover">
+            <button
+              v-if="coverOf(torrent)"
+              class="grid-cover-btn"
+              type="button"
+              title="查看封面大图"
+              aria-label="查看封面大图"
+              @click.stop="previewCover(torrent)"
+            >
+              <img
+                :src="coverOf(torrent).cover"
+                :alt="titleOf(torrent)"
+                loading="lazy"
+                referrerpolicy="no-referrer"
+              />
+            </button>
+            <div v-else class="grid-cover-empty">
+              <FileArchive :size="34" />
+              <span>暂无封面</span>
+            </div>
+
+            <span
+              v-if="ratingOf(torrent) !== null"
+              class="grid-rating"
+              :class="ratingClass(ratingOf(torrent))"
+              title="游民星空玩家评分"
+            >
+              <Star :size="10" fill="currentColor" />
+              {{ ratingOf(torrent).toFixed(1) }}
+            </span>
+            <span v-if="parseCache.get(torrent.path)" class="grid-parsed">已解析</span>
+
+            <div class="grid-actions" @click.stop>
+              <button
+                class="grid-action is-primary"
+                type="button"
+                title="打开种子"
+                @click="emit('open', { torrent, toolId: defaultToolId })"
+              >
+                <Play :size="12" fill="currentColor" />
+                打开
+              </button>
+              <button
+                class="grid-action"
+                type="button"
+                title="在文件夹中显示"
+                aria-label="在文件夹中显示"
+                @click="emit('reveal', torrent)"
+              >
+                <FolderSearch :size="13" />
+              </button>
+            </div>
+          </div>
+
+          <div class="grid-info">
+            <span class="grid-title" :title="titleOf(torrent)">{{ titleOf(torrent) }}</span>
+            <span class="grid-meta">
+              <span>{{ sizeOf(torrent) }}</span>
+              <span class="grid-source">{{ sourceLabel(torrent.source) }}</span>
+            </span>
+          </div>
+        </article>
+      </div>
+
+      <div v-else class="list-body">
+        <TorrentRow
+          v-for="torrent in torrents"
+          :key="torrent.path"
+          :torrent="torrent"
+          :parsed="parseCache.get(torrent.path) || null"
+          :parse-state="parseStates.get(torrent.path) || null"
+          :cover="covers.get(torrent.path) || null"
+          :tools="tools"
+          :default-tool-id="defaultToolId"
+          @open-details="emit('open-details', $event)"
+          @parse="emit('parse', $event)"
+          @open="emit('open', $event)"
+          @reveal="emit('reveal', $event)"
+          @preview-cover="emit('preview-cover', $event)"
+          @manage-tools="emit('manage-tools')"
+        />
+      </div>
+
       <div class="list-foot">
         <span>
           显示
@@ -58,7 +183,7 @@ const emit = defineEmits([
           <template v-if="total !== torrents.length"> / {{ total }}</template>
           个种子
         </span>
-        <span>点击任意行查看种子详情</span>
+        <span>点击任意{{ viewMode === 'grid' ? '卡片' : '行' }}查看种子详情</span>
       </div>
     </div>
 
@@ -143,7 +268,7 @@ const emit = defineEmits([
 
 .list-head {
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) 128px 118px 142px 258px;
+  grid-template-columns: minmax(260px, 1fr) 128px 118px 86px 142px 258px;
   gap: 14px;
   padding: 11px 16px;
   border-bottom: 1px solid var(--line);
@@ -174,6 +299,206 @@ const emit = defineEmits([
   color: var(--muted);
   font-family: var(--mono);
   font-weight: 500;
+}
+
+.grid-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(188px, 1fr));
+  gap: 14px;
+  padding: 16px;
+}
+
+.grid-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.018);
+  cursor: pointer;
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.grid-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(94, 234, 212, 0.28);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
+}
+
+.grid-cover {
+  position: relative;
+  aspect-ratio: 3 / 4;
+  overflow: hidden;
+  background:
+    linear-gradient(160deg, rgba(167, 139, 250, 0.08), rgba(94, 234, 212, 0.04)),
+    rgba(9, 13, 20, 0.9);
+}
+
+.grid-cover-btn {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
+}
+
+.grid-cover-btn img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 220ms ease;
+}
+
+.grid-card:hover .grid-cover-btn img {
+  transform: scale(1.035);
+}
+
+.grid-cover-empty {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: rgba(255, 255, 255, 0.16);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.grid-rating {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: inline-flex;
+  height: 22px;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  backdrop-filter: blur(6px);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.grid-rating.is-high {
+  border-color: rgba(52, 211, 153, 0.35);
+  background: rgba(9, 30, 22, 0.75);
+  color: #86efac;
+}
+
+.grid-rating.is-mid {
+  border-color: rgba(167, 139, 250, 0.35);
+  background: rgba(24, 18, 40, 0.75);
+  color: #c4b5fd;
+}
+
+.grid-rating.is-low {
+  border-color: rgba(255, 255, 255, 0.15);
+  background: rgba(12, 16, 24, 0.75);
+  color: var(--muted);
+}
+
+.grid-parsed {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  padding: 1px 6px;
+  border: 1px solid rgba(52, 211, 153, 0.28);
+  border-radius: 4px;
+  background: rgba(9, 30, 22, 0.72);
+  color: #86efac;
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+
+.grid-actions {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 8px;
+  background: linear-gradient(180deg, transparent, rgba(5, 8, 13, 0.88));
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+
+.grid-card:hover .grid-actions,
+.grid-card:focus-within .grid-actions {
+  opacity: 1;
+}
+
+.grid-action {
+  display: inline-flex;
+  height: 27px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 7px;
+  background: rgba(12, 17, 26, 0.82);
+  color: var(--text-soft);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.grid-action:hover {
+  border-color: rgba(255, 255, 255, 0.28);
+  color: var(--text);
+}
+
+.grid-action.is-primary {
+  border-color: rgba(94, 234, 212, 0.32);
+  background: var(--accent-soft);
+  color: #a7f3d0;
+}
+
+.grid-info {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 11px 12px;
+}
+
+.grid-title {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 560;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.grid-meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted-2);
+  font-size: 10px;
+}
+
+.grid-source {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .state-panel {
@@ -399,7 +724,7 @@ const emit = defineEmits([
 
 @media (max-width: 1280px) {
   .list-head {
-    grid-template-columns: minmax(240px, 1fr) 118px 132px 248px;
+    grid-template-columns: minmax(240px, 1fr) 118px 86px 132px 248px;
   }
 
   .list-head > span:nth-child(3) {
@@ -409,11 +734,17 @@ const emit = defineEmits([
 
 @media (max-width: 900px) {
   .list-head {
-    grid-template-columns: minmax(200px, 1fr) 108px 240px;
+    grid-template-columns: minmax(200px, 1fr) 108px 78px 240px;
   }
 
-  .list-head > span:nth-child(4) {
+  .list-head > span:nth-child(5) {
     display: none;
+  }
+
+  .grid-body {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 11px;
+    padding: 12px;
   }
 }
 

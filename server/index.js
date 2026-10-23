@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { fetchCoverImage, findGameCover, isGamerskyPageUrl, lookupGameRating } from './lib/covers.js'
 import { pickExecutable } from './lib/dialogs.js'
 import { listDrives } from './lib/drives.js'
 import { HttpError } from './lib/errors.js'
@@ -256,6 +257,39 @@ app.post(
     const toolId = typeof req.body?.toolId === 'string' ? req.body.toolId : ''
     if (!toolId) throw new HttpError(400, '缺少打开方式')
     res.json(await setDefaultTool(toolId))
+  }),
+)
+
+app.post(
+  '/api/covers/search',
+  asyncRoute(async (req, res) => {
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : ''
+    if (!name) throw new HttpError(400, '请提供种子名称')
+    if (name.length > 400) throw new HttpError(400, '种子名称过长')
+    res.json(await findGameCover(name))
+  }),
+)
+
+app.post(
+  '/api/covers/rating',
+  asyncRoute(async (req, res) => {
+    const pageUrl = typeof req.body?.pageUrl === 'string' ? req.body.pageUrl.trim() : ''
+    if (!pageUrl) throw new HttpError(400, '缺少游戏页面地址')
+    if (!isGamerskyPageUrl(pageUrl)) throw new HttpError(400, '不支持的游戏页面地址')
+    res.json({ rating: await lookupGameRating(pageUrl) })
+  }),
+)
+
+app.get(
+  '/api/covers/image',
+  asyncRoute(async (req, res) => {
+    const url = typeof req.query?.url === 'string' ? req.query.url : ''
+    if (!url) throw new HttpError(400, '缺少封面地址')
+
+    const image = await fetchCoverImage(url)
+    res.setHeader('Content-Type', image.contentType)
+    res.setHeader('Cache-Control', 'public, max-age=604800, immutable')
+    res.send(image.buffer)
   }),
 )
 

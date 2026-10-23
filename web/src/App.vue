@@ -4,8 +4,12 @@ import {
   ArrowUpDown,
   ChevronDown,
   ChevronRight,
+  ImagePlus,
   Layers3,
+  LayoutGrid,
+  List,
   Menu,
+  RefreshCw,
   Search,
   Settings2,
   ShieldCheck,
@@ -32,6 +36,9 @@ import {
 const LIBRARY_KEY = 'torrent-vault.library.v1'
 const LAST_PATH_KEY = 'torrent-vault.last-path'
 const RECURSIVE_KEY = 'torrent-vault.recursive'
+const COVERS_KEY = 'torrent-vault.covers.v1'
+const VIEW_MODE_KEY = 'torrent-vault.view-mode'
+const COVER_WORKERS = 3
 
 const scanPath = ref('')
 const recursive = ref(true)
@@ -48,6 +55,7 @@ const searchInput = ref(null)
 
 const parseCache = reactive(new Map())
 const parseStates = reactive(new Map())
+const covers = reactive(new Map())
 
 const filters = reactive({
   query: '',
@@ -63,9 +71,15 @@ const scanning = reactive({
   recursive: true,
 })
 
+const coversBusy = ref(false)
+const coverProgress = reactive({ done: 0, total: 0 })
+const viewMode = ref('list')
+const coverPreview = ref(null)
+
 let scanController = null
 let scanSession = null
 let saveTimer = null
+let coverSaveTimer = null
 let libraryReady = false
 
 const toasts = ref([])
@@ -84,10 +98,17 @@ let confirmResolver = null
 const sortOptions = [
   { value: 'mtime-desc', label: '最近修改' },
   { value: 'mtime-asc', label: '最早修改' },
+  { value: 'rating-desc', label: '评分最高' },
+  { value: 'rating-asc', label: '评分最低' },
   { value: 'size-desc', label: '文件大小' },
   { value: 'name-asc', label: '名称排序' },
   { value: 'added-desc', label: '最近发现' },
 ]
+
+function coverRating(torrent) {
+  const rating = covers.get(torrent.path)?.rating
+  return typeof rating === 'number' ? rating : -1
+}
 
 const visibleTorrents = computed(() => {
   let list = torrents.value
@@ -112,6 +133,12 @@ const visibleTorrents = computed(() => {
   switch (filters.sort) {
     case 'mtime-asc':
       sorted.sort((a, b) => (a.mtimeMs || 0) - (b.mtimeMs || 0))
+      break
+    case 'rating-desc':
+      sorted.sort((a, b) => coverRating(b) - coverRating(a))
+      break
+    case 'rating-asc':
+      sorted.sort((a, b) => coverRating(a) - coverRating(b))
       break
     case 'size-desc':
       sorted.sort((a, b) => (b.size || 0) - (a.size || 0))
@@ -141,6 +168,9 @@ const selectedParsed = computed(() =>
 )
 const selectedParseState = computed(() =>
   selectedTorrent.value ? parseStates.get(selectedTorrent.value.path) || null : null,
+)
+const selectedCover = computed(() =>
+  selectedTorrent.value ? covers.get(selectedTorrent.value.path) || null : null,
 )
 
 const activeSourceMeta = computed(() =>
@@ -308,6 +338,191 @@ function restoreLibrary() {
   sources.value = loadedSources
   torrents.value = loadedTorrents.sort((a, b) => (b.mtimeMs || 0) - (a.mtimeMs || 0))
   libraryReady = true
+}
+
+function restoreCovers() {
+  let raw = null
+  try {
+    raw = JSON.parse(localStorage.getItem(COVERS_KEY) || 'null')
+  } catch {
+    raw = null
+  }
+  if (!raw || typeof raw !== 'object') return
+
+  for (const [torrentPath, entry] of Object.entries(raw)) {
+    if (!entry || typeof entry.cover !== 'string' || !entry.cover) continue
+    covers.set(torrentPath, {
+      cover: entry.cover,
+      title: typeof entry.title === 'string' ? entry.title : '',
+      pageUrl: typeof entry.pageUrl === 'string' ? entry.pageUrl : '',
+      query: typeof entry.query === 'string' ? entry.query : '',
+      rating:
+        typeof entry.rating === 'number' ? entry.rating : entry.rating === null ? null : undefined,
+      updatedAt: Number(entry.updatedAt) || 0,
+    })
+  }
+}
+
+function saveCovers() {
+  if (coverSaveTimer) {
+    window.clearTimeout(coverSaveTimer)
+    coverSaveTimer = null
+  }
+
+  const payload = {}
+  for (const [torrentPath, entry] of covers) payload[torrentPath] = entry
+
+  try {
+    localStorage.setItem(COVERS_KEY, JSON.stringify(payload))
+  } catch (error) {
+    console.warn('[covers] 保存封面索引失败', error)
+  }
+}
+
+function queueCoverSave() {
+  if (coverSaveTimer) window.clearTimeout(coverSaveTimer)
+  coverSaveTimer = window.setTimeout(() => {
+    coverSaveTimer = null
+    saveCovers()
+  }, 800)
+}
+
+function restoreViewMode() {
+  viewMode.value = localStorage.getItem(VIEW_MODE_KEY) === 'grid' ? 'grid' : 'list'
+}
+
+function setViewMode(mode) {
+  viewMode.value = mode === 'grid' ? 'grid' : 'list'
+  try {
+    localStorage.setItem(VIEW_MODE_KEY, viewMode.value)
+  } catch {
+    // 忽略存储异常
+  }
+}
+
+function openCoverPreview(payload) {
+  if (!payload?.src) return
+  coverPreview.value = {
+    src: payload.src,
+    title: payload.title || '',
+    pageUrl: payload.pageUrl || '',
+  }
+}
+
+function closeCoverPreview() {
+  coverPreview.value = null
+}
+
+function handleCoverPreviewKeydown(event) {
+  if (!coverPreview.value || event.key !== 'Escape') return
+  event.preventDefault()
+  event.stopPropagation()
+  closeCoverPreview()
+}
+
+async function updateCovers() {
+  if (coversBusy.value) return
+
+  const queue = [...visibleTorrents.value]
+  if (!queue.length) {
+    notify('当前没有可更新封面的种子', 'info')
+    return
+  }
+
+  coversBusy.value = true
+  coverProgress.done = 0
+  coverProgress.total = queue.length
+
+  let found = 0
+  let rated = 0
+  let skipped = 0
+  let missing = 0
+  let failed = 0
+  let lastError = ''
+
+  const worker = async () => {
+    while (queue.length) {
+      const torrent = queue.shift()
+      if (!torrent) continue
+
+      const existing = covers.get(torrent.path)
+
+      // 已有封面的种子直接跳过；仅当旧数据缺少评分时补抓一次评分。
+      if (existing?.cover) {
+        if (existing.rating !== undefined || !existing.pageUrl) {
+          skipped += 1
+          coverProgress.done += 1
+          continue
+        }
+
+        try {
+          const payload = await api.lookupRating(existing.pageUrl)
+          const rating = typeof payload?.rating === 'number' ? payload.rating : null
+          covers.set(torrent.path, { ...existing, rating })
+          rated += 1
+          queueCoverSave()
+        } catch (error) {
+          failed += 1
+          lastError = error.message || '请求失败'
+        } finally {
+          coverProgress.done += 1
+        }
+        continue
+      }
+
+      const parsed = parseCache.get(torrent.path)
+      const searchName = parsed?.name || torrent.fileName || torrent.path
+
+      try {
+        const payload = await api.searchCover(searchName)
+        const match = payload?.match
+        if (match?.cover) {
+          covers.set(torrent.path, {
+            cover: match.cover,
+            title: match.title || '',
+            pageUrl: match.pageUrl || '',
+            query: payload.query || '',
+            rating: typeof match.rating === 'number' ? match.rating : null,
+            updatedAt: Date.now(),
+          })
+          found += 1
+          queueCoverSave()
+        } else {
+          missing += 1
+        }
+      } catch (error) {
+        failed += 1
+        lastError = error.message || '请求失败'
+      } finally {
+        coverProgress.done += 1
+      }
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(COVER_WORKERS, queue.length) }, () => worker()),
+  )
+
+  saveCovers()
+  coversBusy.value = false
+
+  if (found === 0 && rated === 0 && failed > 0) {
+    notify(`封面更新失败：${lastError || '请稍后重试'}`, 'error', { timeout: 8000 })
+    return
+  }
+
+  if (found === 0 && rated === 0 && missing === 0) {
+    notify(`${skipped} 个种子已有封面，已全部跳过`, 'info', { timeout: 5000 })
+    return
+  }
+
+  const parts = []
+  if (found > 0) parts.push(`更新 ${found} 个封面`)
+  if (rated > 0) parts.push(`补全 ${rated} 个评分`)
+  if (skipped > 0) parts.push(`跳过 ${skipped} 个已有封面`)
+  if (missing > 0) parts.push(`未匹配 ${missing} 个`)
+  if (failed > 0) parts.push(`失败 ${failed} 个`)
+  notify(`封面更新完成：${parts.join('，')}`, failed > 0 ? 'info' : 'success', { timeout: 6000 })
 }
 
 function scheduleSave() {
@@ -572,7 +787,13 @@ async function removeSource(source) {
   })
   if (!confirmed) return
 
+  const removedPaths = torrents.value
+    .filter((torrent) => torrent.source === source.id)
+    .map((torrent) => torrent.path)
+
   torrents.value = torrents.value.filter((torrent) => torrent.source !== source.id)
+  for (const torrentPath of removedPaths) covers.delete(torrentPath)
+  saveCovers()
   removeSourceFromLibrary(source.id)
   if (filters.source === source.id) filters.source = 'all'
   if (selectedPath.value && !torrents.value.some((torrent) => torrent.path === selectedPath.value)) {
@@ -603,6 +824,8 @@ async function clearLibrary() {
   filters.query = ''
   parseCache.clear()
   parseStates.clear()
+  covers.clear()
+  saveCovers()
   notify('种子库已清空', 'success')
 }
 
@@ -698,17 +921,22 @@ function onWindowResize() {
 
 onMounted(() => {
   restoreLibrary()
+  restoreCovers()
+  restoreViewMode()
   loadDrives(false)
   loadTools(false, true)
+  window.addEventListener('keydown', handleCoverPreviewKeydown, true)
   window.addEventListener('keydown', onGlobalKeydown)
   window.addEventListener('resize', onWindowResize)
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleCoverPreviewKeydown, true)
   window.removeEventListener('keydown', onGlobalKeydown)
   window.removeEventListener('resize', onWindowResize)
   scanController?.abort()
   if (saveTimer) window.clearTimeout(saveTimer)
+  if (coverSaveTimer) window.clearTimeout(coverSaveTimer)
 })
 </script>
 
@@ -778,10 +1006,43 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="topbar-actions">
+          <div class="view-switch" role="group" aria-label="切换视图">
+            <button
+              class="view-btn"
+              :class="{ active: viewMode === 'list' }"
+              type="button"
+              title="列表视图"
+              aria-label="列表视图"
+              @click="setViewMode('list')"
+            >
+              <List :size="14" />
+            </button>
+            <button
+              class="view-btn"
+              :class="{ active: viewMode === 'grid' }"
+              type="button"
+              title="大图标视图"
+              aria-label="大图标视图"
+              @click="setViewMode('grid')"
+            >
+              <LayoutGrid :size="14" />
+            </button>
+          </div>
           <div class="result-pill">
             <span class="result-dot" :class="{ active: scanning.active }"></span>
             {{ formatNumber(visibleTorrents.length) }} 个结果
           </div>
+          <button
+            class="btn tools-btn cover-btn"
+            type="button"
+            :disabled="coversBusy || scanning.active || visibleTorrents.length === 0"
+            :title="coversBusy ? '正在从游民星空查找游戏封面' : '从游民星空单机区查找游戏封面与评分（已有封面的种子会跳过）'"
+            @click="updateCovers"
+          >
+            <RefreshCw v-if="coversBusy" :size="15" class="spin" />
+            <ImagePlus v-else :size="15" />
+            <span>{{ coversBusy ? `更新中 ${coverProgress.done}/${coverProgress.total}` : '更新封面' }}</span>
+          </button>
           <button class="btn tools-btn" type="button" @click="openTools">
             <Settings2 :size="15" />
             <span>打开方式</span>
@@ -855,8 +1116,10 @@ onBeforeUnmount(() => {
             :torrents="visibleTorrents"
             :parse-cache="parseCache"
             :parse-states="parseStates"
+            :covers="covers"
             :tools="tools"
             :default-tool-id="defaultToolId"
+            :view-mode="viewMode"
             :scanning="scanning.active"
             :has-filters="hasFilters"
             :scan-path="scanPath"
@@ -865,6 +1128,7 @@ onBeforeUnmount(() => {
             @parse="handleParse"
             @open="handleOpen"
             @reveal="handleReveal"
+            @preview-cover="openCoverPreview"
             @manage-tools="openTools"
             @browse="chooseFolder"
             @scan="startScan()"
@@ -894,12 +1158,14 @@ onBeforeUnmount(() => {
       :torrent="selectedTorrent"
       :parsed="selectedParsed"
       :parse-state="selectedParseState"
+      :cover="selectedCover"
       :tools="tools"
       :default-tool-id="defaultToolId"
       @close="selectedPath = null"
       @parse="handleParse"
       @open="handleOpen"
       @reveal="handleReveal"
+      @preview-cover="openCoverPreview"
       @manage-tools="openTools"
       @notify="notify"
     />
@@ -928,6 +1194,39 @@ onBeforeUnmount(() => {
     />
 
     <ToastHost :toasts="toasts" @dismiss="dismissToast" />
+
+    <Teleport to="body">
+      <Transition name="cover-preview">
+        <div
+          v-if="coverPreview"
+          class="cover-preview-layer"
+          role="dialog"
+          aria-modal="true"
+          aria-label="游戏封面预览"
+          @click.self="closeCoverPreview"
+        >
+          <figure class="cover-preview-card">
+            <button
+              class="cover-preview-close"
+              type="button"
+              aria-label="关闭封面预览"
+              @click="closeCoverPreview"
+            >
+              <X :size="18" />
+            </button>
+            <img
+              :src="coverPreview.src"
+              :alt="coverPreview.title || '游戏封面'"
+              referrerpolicy="no-referrer"
+            />
+            <figcaption>
+              <span class="cover-preview-title">{{ coverPreview.title || '游戏封面' }}</span>
+              <span class="cover-preview-hint">点击背景或按 Esc 关闭</span>
+            </figcaption>
+          </figure>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
@@ -1063,6 +1362,123 @@ onBeforeUnmount(() => {
 .tools-btn {
   height: 34px;
   font-size: 12px;
+}
+
+.view-switch {
+  display: flex;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.022);
+}
+
+.view-btn {
+  display: grid;
+  width: 30px;
+  height: 28px;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted-2);
+  transition:
+    color 140ms ease,
+    background 140ms ease;
+}
+
+.view-btn:hover {
+  color: var(--text);
+}
+
+.view-btn.active {
+  background: rgba(94, 234, 212, 0.12);
+  color: var(--accent);
+}
+
+.cover-preview-layer {
+  position: fixed;
+  z-index: 960;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 36px;
+  background: rgba(3, 6, 10, 0.86);
+  backdrop-filter: blur(10px);
+  cursor: zoom-out;
+}
+
+.cover-preview-card {
+  position: relative;
+  display: flex;
+  max-width: min(92vw, 560px);
+  max-height: 90vh;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  cursor: default;
+}
+
+.cover-preview-card img {
+  display: block;
+  max-width: 100%;
+  max-height: calc(90vh - 74px);
+  border: 1px solid rgba(167, 139, 250, 0.24);
+  border-radius: 14px;
+  background: #0b1017;
+  object-fit: contain;
+  box-shadow: 0 34px 90px -24px rgba(0, 0, 0, 0.9);
+}
+
+.cover-preview-card figcaption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.cover-preview-title {
+  overflow: hidden;
+  color: var(--text-soft);
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cover-preview-hint {
+  flex: none;
+  color: var(--muted-2);
+  font-size: 10.5px;
+}
+
+.cover-preview-close {
+  position: absolute;
+  z-index: 1;
+  top: -14px;
+  right: -14px;
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: rgba(12, 18, 26, 0.94);
+  color: var(--text-soft);
+}
+
+.cover-preview-close:hover {
+  border-color: rgba(94, 234, 212, 0.32);
+  color: var(--accent);
+}
+
+.cover-preview-enter-active,
+.cover-preview-leave-active {
+  transition: opacity 180ms ease;
+}
+
+.cover-preview-enter-from,
+.cover-preview-leave-to {
+  opacity: 0;
 }
 
 .main {

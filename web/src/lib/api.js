@@ -61,6 +61,10 @@ export const api = {
     request(`/api/tools/custom/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   setDefaultTool: (toolId) =>
     request('/api/tools/default', { method: 'POST', body: { toolId } }),
+  searchCover: (name) =>
+    request('/api/covers/search', { method: 'POST', body: { name } }),
+  lookupRating: (pageUrl) =>
+    request('/api/covers/rating', { method: 'POST', body: { pageUrl } }),
 }
 
 /**
