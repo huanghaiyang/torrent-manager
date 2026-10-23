@@ -1,13 +1,13 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
-  ArrowUpDown,
-  ChevronDown,
   ChevronRight,
   ImagePlus,
   Layers3,
   LayoutGrid,
   List,
+  ListChecks,
+  LoaderCircle,
   Menu,
   RefreshCw,
   Search,
@@ -21,6 +21,7 @@ import ConfirmDialog from './components/ConfirmDialog.vue'
 import DetailsDrawer from './components/DetailsDrawer.vue'
 import FolderPickerDialog from './components/FolderPickerDialog.vue'
 import ScanProgress from './components/ScanProgress.vue'
+import SortControl from './components/SortControl.vue'
 import ToastHost from './components/ToastHost.vue'
 import ToolsDialog from './components/ToolsDialog.vue'
 import TorrentList from './components/TorrentList.vue'
@@ -55,12 +56,14 @@ const searchInput = ref(null)
 
 const parseCache = reactive(new Map())
 const parseStates = reactive(new Map())
+const parsedSummaries = reactive(new Map())
 const covers = reactive(new Map())
 
 const filters = reactive({
   query: '',
   source: 'all',
-  sort: 'mtime-desc',
+  sort: 'mtime',
+  order: 'desc',
 })
 
 const scanning = reactive({
@@ -73,6 +76,9 @@ const scanning = reactive({
 
 const coversBusy = ref(false)
 const coverProgress = reactive({ done: 0, total: 0 })
+const PARSE_WORKERS = 3
+const parseAllBusy = ref(false)
+const parseAllProgress = reactive({ done: 0, total: 0 })
 const viewMode = ref('list')
 const coverPreview = ref(null)
 
@@ -96,18 +102,30 @@ const confirmState = reactive({
 let confirmResolver = null
 
 const sortOptions = [
-  { value: 'mtime-desc', label: '最近修改' },
-  { value: 'mtime-asc', label: '最早修改' },
-  { value: 'rating-desc', label: '评分最高' },
-  { value: 'rating-asc', label: '评分最低' },
-  { value: 'size-desc', label: '文件大小' },
-  { value: 'name-asc', label: '名称排序' },
-  { value: 'added-desc', label: '最近发现' },
+  { value: 'mtime', label: '修改时间', defaultOrder: 'desc' },
+  { value: 'rating', label: '评分', defaultOrder: 'desc' },
+  { value: 'size', label: '文件大小', defaultOrder: 'desc' },
+  { value: 'name', label: '名称', defaultOrder: 'asc' },
+  { value: 'added', label: '发现时间', defaultOrder: 'desc' },
 ]
 
 function coverRating(torrent) {
   const rating = covers.get(torrent.path)?.rating
   return typeof rating === 'number' ? rating : -1
+}
+
+function parsedName(torrent) {
+  return parseCache.get(torrent.path)?.name || parsedSummaries.get(torrent.path)?.name || ''
+}
+
+function changeSortField(value) {
+  filters.sort = value
+  const option = sortOptions.find((item) => item.value === value)
+  if (option?.defaultOrder) filters.order = option.defaultOrder
+}
+
+function toggleSortOrder() {
+  filters.order = filters.order === 'asc' ? 'desc' : 'asc'
 }
 
 const visibleTorrents = computed(() => {
@@ -119,41 +137,36 @@ const visibleTorrents = computed(() => {
 
   const query = filters.query.trim().toLowerCase()
   if (query) {
-    list = list.filter((torrent) => {
-      const parsed = parseCache.get(torrent.path)
-      return (
+    list = list.filter(
+      (torrent) =>
         torrent.fileName.toLowerCase().includes(query) ||
         torrent.path.toLowerCase().includes(query) ||
-        (parsed?.name || '').toLowerCase().includes(query)
-      )
-    })
+        parsedName(torrent).toLowerCase().includes(query),
+    )
   }
 
+  const direction = filters.order === 'asc' ? 1 : -1
   const sorted = [...list]
   switch (filters.sort) {
-    case 'mtime-asc':
-      sorted.sort((a, b) => (a.mtimeMs || 0) - (b.mtimeMs || 0))
+    case 'rating':
+      sorted.sort((a, b) => (coverRating(a) - coverRating(b)) * direction)
       break
-    case 'rating-desc':
-      sorted.sort((a, b) => coverRating(b) - coverRating(a))
+    case 'size':
+      sorted.sort((a, b) => ((a.size || 0) - (b.size || 0)) * direction)
       break
-    case 'rating-asc':
-      sorted.sort((a, b) => coverRating(a) - coverRating(b))
-      break
-    case 'size-desc':
-      sorted.sort((a, b) => (b.size || 0) - (a.size || 0))
-      break
-    case 'name-asc':
-      sorted.sort((a, b) =>
-        a.fileName.localeCompare(b.fileName, 'zh-CN', { numeric: true, sensitivity: 'base' }),
+    case 'name':
+      sorted.sort(
+        (a, b) =>
+          a.fileName.localeCompare(b.fileName, 'zh-CN', { numeric: true, sensitivity: 'base' }) *
+          direction,
       )
       break
-    case 'added-desc':
-      sorted.sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0))
+    case 'added':
+      sorted.sort((a, b) => ((a.addedAt || 0) - (b.addedAt || 0)) * direction)
       break
-    case 'mtime-desc':
+    case 'mtime':
     default:
-      sorted.sort((a, b) => (b.mtimeMs || 0) - (a.mtimeMs || 0))
+      sorted.sort((a, b) => ((a.mtimeMs || 0) - (b.mtimeMs || 0)) * direction)
       break
   }
 
@@ -853,8 +866,9 @@ async function parseTorrent(torrent, { force = false, notifyError = true } = {})
 
   parseStates.set(key, { loading: true, error: null })
   try {
-    const payload = await api.parseTorrent(key)
+    const payload = await api.parseTorrent(key, force)
     parseCache.set(key, payload.torrent)
+    applyParsedSummary(torrent, payload)
     parseStates.delete(key)
     if (notifyError) notify(`「${payload.torrent.name}」解析完成`, 'success')
     return payload.torrent
@@ -863,6 +877,98 @@ async function parseTorrent(torrent, { force = false, notifyError = true } = {})
     if (notifyError) notify(error.message || '解析失败', 'error', { timeout: 8000 })
     return null
   }
+}
+
+function applyParsedSummary(torrent, payload) {
+  const parsed = payload?.torrent
+  if (!parsed) return
+  parsedSummaries.set(torrent.path, {
+    path: torrent.path,
+    fileName: parsed.fileName || torrent.fileName,
+    fileSize: parsed.fileSize || torrent.size,
+    fileMtimeMs: parsed.fileMtimeMs || torrent.mtimeMs,
+    name: parsed.name,
+    totalSize: parsed.totalSize,
+    fileCount: parsed.fileCount,
+    version: parsed.version,
+    infoHashV1: parsed.infoHashV1 || '',
+    infoHashV2: parsed.infoHashV2 || '',
+    parsedAt: payload.parsedAt || '',
+  })
+}
+
+async function loadParsedSummaries() {
+  try {
+    const payload = await api.listParsed()
+    for (const entry of Array.isArray(payload?.entries) ? payload.entries : []) {
+      if (!entry || typeof entry.path !== 'string' || !entry.path) continue
+      parsedSummaries.set(entry.path, entry)
+    }
+  } catch (error) {
+    console.warn('[parse] 读取后端解析缓存失败', error)
+  }
+}
+
+async function parseAllTorrents() {
+  if (parseAllBusy.value) return
+
+  const queue = [...torrents.value]
+  if (!queue.length) {
+    notify('当前没有可解析的种子', 'info')
+    return
+  }
+
+  parseAllBusy.value = true
+  parseAllProgress.done = 0
+  parseAllProgress.total = queue.length
+
+  let parsed = 0
+  let cached = 0
+  let failed = 0
+  let lastError = ''
+
+  const worker = async () => {
+    while (queue.length) {
+      const torrent = queue.shift()
+      if (!torrent) continue
+
+      try {
+        const payload = await api.parseTorrent(torrent.path, false)
+        applyParsedSummary(torrent, payload)
+        // 仅保留摘要，避免把全部种子内容堆进内存；
+        // 正在查看详情的种子才保留完整解析结果。
+        if (selectedPath.value === torrent.path) {
+          parseCache.set(torrent.path, payload.torrent)
+        }
+        if (payload.cached) cached += 1
+        else parsed += 1
+      } catch (error) {
+        failed += 1
+        lastError = error.message || '解析失败'
+      } finally {
+        parseAllProgress.done += 1
+      }
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(PARSE_WORKERS, queue.length) }, () => worker()),
+  )
+
+  parseAllBusy.value = false
+
+  if (parsed === 0 && cached === 0 && failed > 0) {
+    notify(`批量解析失败：${lastError || '请稍后重试'}`, 'error', { timeout: 8000 })
+    return
+  }
+
+  const parts = []
+  if (parsed > 0) parts.push(`新解析 ${parsed} 个`)
+  if (cached > 0) parts.push(`使用缓存 ${cached} 个`)
+  if (failed > 0) parts.push(`失败 ${failed} 个`)
+  notify(`批量解析完成：${parts.join('，')}`, failed > 0 ? 'info' : 'success', {
+    timeout: 6000,
+  })
 }
 
 function handleParse(torrent) {
@@ -923,6 +1029,7 @@ onMounted(() => {
   restoreLibrary()
   restoreCovers()
   restoreViewMode()
+  loadParsedSummaries()
   loadDrives(false)
   loadTools(false, true)
   window.addEventListener('keydown', handleCoverPreviewKeydown, true)
@@ -1043,6 +1150,17 @@ onBeforeUnmount(() => {
             <ImagePlus v-else :size="15" />
             <span>{{ coversBusy ? `更新中 ${coverProgress.done}/${coverProgress.total}` : '更新封面' }}</span>
           </button>
+          <button
+            class="btn tools-btn"
+            type="button"
+            :disabled="parseAllBusy || scanning.active || torrents.length === 0"
+            :title="parseAllBusy ? '正在解析种子内容，结果保存在本地' : '一键解析种子库中全部种子的内容（结果保存在后端本地）'"
+            @click="parseAllTorrents"
+          >
+            <LoaderCircle v-if="parseAllBusy" :size="15" class="spin" />
+            <ListChecks v-else :size="15" />
+            <span>{{ parseAllBusy ? `解析中 ${parseAllProgress.done}/${parseAllProgress.total}` : '全部解析' }}</span>
+          </button>
           <button class="btn tools-btn" type="button" @click="openTools">
             <Settings2 :size="15" />
             <span>打开方式</span>
@@ -1072,15 +1190,13 @@ onBeforeUnmount(() => {
             </div>
 
             <div class="heading-actions">
-              <label class="sort-control" title="排序方式">
-                <ArrowUpDown :size="14" />
-                <select v-model="filters.sort" aria-label="排序方式">
-                  <option v-for="option in sortOptions" :key="option.value" :value="option.value">
-                    {{ option.label }}
-                  </option>
-                </select>
-                <ChevronDown :size="13" class="sort-caret" />
-              </label>
+              <SortControl
+                :model-value="filters.sort"
+                :order="filters.order"
+                :options="sortOptions"
+                @update:model-value="changeSortField"
+                @update:order="toggleSortOrder"
+              />
               <button
                 v-if="torrents.length || sources.length"
                 class="btn btn-ghost clear-btn"
@@ -1116,6 +1232,7 @@ onBeforeUnmount(() => {
             :torrents="visibleTorrents"
             :parse-cache="parseCache"
             :parse-states="parseStates"
+            :summaries="parsedSummaries"
             :covers="covers"
             :tools="tools"
             :default-tool-id="defaultToolId"
@@ -1551,39 +1668,6 @@ onBeforeUnmount(() => {
   gap: 7px;
 }
 
-.sort-control {
-  display: inline-flex;
-  height: 34px;
-  align-items: center;
-  gap: 7px;
-  padding: 0 9px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: rgba(255, 255, 255, 0.025);
-  color: var(--muted-2);
-  cursor: pointer;
-}
-
-.sort-control select {
-  min-width: 82px;
-  border: 0;
-  outline: 0;
-  appearance: none;
-  background: transparent;
-  color: var(--muted);
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.sort-control option {
-  background: var(--panel-soft);
-  color: var(--text);
-}
-
-.sort-caret {
-  pointer-events: none;
-}
-
 .clear-btn {
   height: 34px;
   font-size: 11px;
@@ -1778,10 +1862,6 @@ onBeforeUnmount(() => {
   .heading-actions {
     width: 100%;
     justify-content: space-between;
-  }
-
-  .sort-control {
-    flex: 1;
   }
 
   .page-footer {

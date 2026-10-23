@@ -226,7 +226,7 @@ function reveal() {
   grid-template-columns: minmax(260px, 1fr) 128px 118px 86px 142px 258px;
   align-items: center;
   gap: 14px;
-  min-height: 68px;
+  height: 72px;
   padding: 10px 16px;
   border-top: 1px solid var(--line);
   cursor: pointer;
@@ -545,6 +545,7 @@ function reveal() {
 @media (max-width: 720px) {
   .torrent-row {
     grid-template-columns: minmax(0, 1fr) auto;
+    height: auto;
     align-items: start;
     gap: 10px;
     padding: 12px 13px;

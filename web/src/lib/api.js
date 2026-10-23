@@ -33,11 +33,12 @@ export const api = {
   health: () => request('/api/health'),
   getDrives: (refresh = false) => request(`/api/drives${refresh ? '?refresh=1' : ''}`),
   getTools: (refresh = false) => request(`/api/tools${refresh ? '?refresh=1' : ''}`),
-  parseTorrent: (torrentPath) =>
+  parseTorrent: (torrentPath, force = false) =>
     request('/api/torrent/parse', {
       method: 'POST',
-      body: { path: torrentPath },
+      body: { path: torrentPath, force },
     }),
+  listParsed: () => request('/api/torrents/parsed'),
   openTorrent: (torrentPath, toolId) =>
     request('/api/open', {
       method: 'POST',

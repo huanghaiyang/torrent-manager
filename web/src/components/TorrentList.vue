@@ -1,4 +1,5 @@
 <script setup>
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   FileArchive,
   FolderOpen,
@@ -17,6 +18,7 @@ const props = defineProps({
   torrents: { type: Array, default: () => [] },
   parseCache: { type: Map, default: () => new Map() },
   parseStates: { type: Map, default: () => new Map() },
+  summaries: { type: Map, default: () => new Map() },
   covers: { type: Map, default: () => new Map() },
   tools: { type: Array, default: () => [] },
   defaultToolId: { type: String, default: 'system' },
@@ -39,12 +41,178 @@ const emit = defineEmits([
   'clear-filters',
 ])
 
+// 虚拟列表参数，需与样式中的行高、栅格间距保持一致。
+const VIRTUAL_MIN = 60
+const ROW_HEIGHT = 72
+const GRID_PADDING = 16
+const GRID_GAP = 14
+const GRID_CARD_MIN = 188
+const GRID_INFO_HEIGHT = 78
+const OVERSCAN_ROWS = 4
+
+const listRef = ref(null)
+const bodyRef = ref(null)
+const scrollTop = ref(0)
+const viewportHeight = ref(0)
+const bodyOffset = ref(0)
+const bodyWidth = ref(0)
+const narrow = ref(false)
+
+let scrollerEl = null
+let resizeObserver = null
+let scrollFrame = 0
+let mobileQuery = null
+
+const isGrid = computed(() => props.viewMode === 'grid')
+
+const virtualEnabled = computed(
+  () => props.torrents.length >= VIRTUAL_MIN && !narrow.value && viewportHeight.value > 0,
+)
+
+const gridColumns = computed(() => {
+  if (!bodyWidth.value) return 1
+  const usable = bodyWidth.value - GRID_PADDING * 2
+  return Math.max(1, Math.floor((usable + GRID_GAP) / (GRID_CARD_MIN + GRID_GAP)))
+})
+
+const gridCardWidth = computed(() => {
+  if (!bodyWidth.value) return GRID_CARD_MIN
+  const usable = bodyWidth.value - GRID_PADDING * 2
+  const columns = gridColumns.value
+  return Math.max(140, (usable - GRID_GAP * (columns - 1)) / columns)
+})
+
+const gridCardHeight = computed(
+  () => Math.round((gridCardWidth.value * 4) / 3) + GRID_INFO_HEIGHT,
+)
+
+const windowRange = computed(() => {
+  const total = props.torrents.length
+  if (!virtualEnabled.value) {
+    const padding = isGrid.value ? GRID_PADDING : 0
+    return { start: 0, end: total, top: padding, bottom: padding }
+  }
+
+  const columns = isGrid.value ? gridColumns.value : 1
+  const pitch = isGrid.value ? gridCardHeight.value + GRID_GAP : ROW_HEIGHT
+  const padding = isGrid.value ? GRID_PADDING : 0
+  const rows = Math.ceil(total / columns)
+  const localTop = scrollTop.value - bodyOffset.value - padding
+  const span = Math.max(1, Math.ceil(viewportHeight.value / pitch) + OVERSCAN_ROWS * 2)
+
+  let startRow = Math.max(0, Math.floor(localTop / pitch) - OVERSCAN_ROWS)
+  startRow = Math.min(startRow, Math.max(0, rows - span))
+  let endRow = Math.min(rows, Math.ceil((localTop + viewportHeight.value) / pitch) + OVERSCAN_ROWS)
+  endRow = Math.max(endRow, Math.min(rows, startRow + span))
+
+  return {
+    start: startRow * columns,
+    end: Math.min(total, endRow * columns),
+    top: padding + startRow * pitch,
+    bottom: padding + Math.max(0, rows - endRow) * pitch,
+  }
+})
+
+const visibleItems = computed(() =>
+  props.torrents.slice(windowRange.value.start, windowRange.value.end),
+)
+
+const listBodyStyle = computed(() => {
+  if (!virtualEnabled.value) return null
+  return {
+    paddingTop: `${windowRange.value.top}px`,
+    paddingBottom: `${windowRange.value.bottom}px`,
+  }
+})
+
+const gridBodyStyle = computed(() => {
+  const style = {
+    gridTemplateColumns: `repeat(${gridColumns.value}, minmax(0, 1fr))`,
+  }
+  if (virtualEnabled.value) {
+    style.paddingTop = `${windowRange.value.top}px`
+    style.paddingBottom = `${windowRange.value.bottom}px`
+  }
+  return style
+})
+
+function measureLayout() {
+  const list = listRef.value
+  if (!list) return
+  const scroller = scrollerEl || list.closest('.main')
+  if (!scroller) return
+  scrollerEl = scroller
+
+  if (scrollTop.value !== scroller.scrollTop) scrollTop.value = scroller.scrollTop
+  if (viewportHeight.value !== scroller.clientHeight) viewportHeight.value = scroller.clientHeight
+
+  const body = bodyRef.value
+  if (!body) return
+
+  const scrollerRect = scroller.getBoundingClientRect()
+  const bodyRect = body.getBoundingClientRect()
+  const offset = bodyRect.top - scrollerRect.top + scroller.scrollTop
+  if (bodyOffset.value !== offset) bodyOffset.value = offset
+  if (bodyWidth.value !== bodyRect.width) bodyWidth.value = bodyRect.width
+}
+
+function onScroll() {
+  if (scrollFrame) return
+  scrollFrame = window.requestAnimationFrame(() => {
+    scrollFrame = 0
+    measureLayout()
+  })
+}
+
+function syncNarrow(event) {
+  narrow.value = event.matches
+}
+
+onMounted(() => {
+  measureLayout()
+
+  const scroller = listRef.value?.closest('.main') || null
+  if (scroller) {
+    scrollerEl = scroller
+    scroller.addEventListener('scroll', onScroll, { passive: true })
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => measureLayout())
+      resizeObserver.observe(scroller)
+    }
+  }
+
+  if (typeof window.matchMedia === 'function') {
+    mobileQuery = window.matchMedia('(max-width: 720px)')
+    narrow.value = mobileQuery.matches
+    mobileQuery.addEventListener?.('change', syncNarrow)
+  }
+})
+
+onBeforeUnmount(() => {
+  if (scrollFrame) window.cancelAnimationFrame(scrollFrame)
+  scrollerEl?.removeEventListener('scroll', onScroll)
+  resizeObserver?.disconnect()
+  mobileQuery?.removeEventListener?.('change', syncNarrow)
+})
+
+watch(
+  () => [props.torrents.length, props.viewMode, narrow.value],
+  async () => {
+    await nextTick()
+    measureLayout()
+  },
+)
+
 function coverOf(torrent) {
   return props.covers.get(torrent.path) || null
 }
 
+function summaryOf(torrent) {
+  return props.parseCache.get(torrent.path) || props.summaries.get(torrent.path) || null
+}
+
 function titleOf(torrent) {
-  return props.parseCache.get(torrent.path)?.name || torrent.fileName
+  return summaryOf(torrent)?.name || torrent.fileName
 }
 
 function ratingOf(torrent) {
@@ -59,7 +227,7 @@ function ratingClass(value) {
 }
 
 function sizeOf(torrent) {
-  const parsed = props.parseCache.get(torrent.path)
+  const parsed = summaryOf(torrent)
   return formatBytes(parsed?.totalSize ?? torrent.size)
 }
 
@@ -75,7 +243,7 @@ function previewCover(torrent) {
 </script>
 
 <template>
-  <section class="library-card">
+  <section ref="listRef" class="library-card">
     <div v-if="viewMode === 'list'" class="list-head">
       <span>种子文件</span>
       <span>大小</span>
@@ -86,11 +254,12 @@ function previewCover(torrent) {
     </div>
 
     <div v-if="torrents.length">
-      <div v-if="viewMode === 'grid'" class="grid-body">
+      <div v-if="viewMode === 'grid'" ref="bodyRef" class="grid-body" :style="gridBodyStyle">
         <article
-          v-for="torrent in torrents"
+          v-for="torrent in visibleItems"
           :key="torrent.path"
           class="grid-card"
+          :style="{ height: `${gridCardHeight}px` }"
           @click="emit('open-details', torrent)"
         >
           <div class="grid-cover">
@@ -123,7 +292,7 @@ function previewCover(torrent) {
               <Star :size="10" fill="currentColor" />
               {{ ratingOf(torrent).toFixed(1) }}
             </span>
-            <span v-if="parseCache.get(torrent.path)" class="grid-parsed">已解析</span>
+            <span v-if="summaryOf(torrent)" class="grid-parsed">已解析</span>
 
             <div class="grid-actions" @click.stop>
               <button
@@ -157,12 +326,12 @@ function previewCover(torrent) {
         </article>
       </div>
 
-      <div v-else class="list-body">
+      <div v-else ref="bodyRef" class="list-body" :style="listBodyStyle">
         <TorrentRow
-          v-for="torrent in torrents"
+          v-for="torrent in visibleItems"
           :key="torrent.path"
           :torrent="torrent"
-          :parsed="parseCache.get(torrent.path) || null"
+          :parsed="summaryOf(torrent)"
           :parse-state="parseStates.get(torrent.path) || null"
           :cover="covers.get(torrent.path) || null"
           :tools="tools"
@@ -331,7 +500,9 @@ function previewCover(torrent) {
 
 .grid-cover {
   position: relative;
-  aspect-ratio: 3 / 4;
+  display: flex;
+  min-height: 0;
+  flex: 1;
   overflow: hidden;
   background:
     linear-gradient(160deg, rgba(167, 139, 250, 0.08), rgba(94, 234, 212, 0.04)),
@@ -469,7 +640,9 @@ function previewCover(torrent) {
 
 .grid-info {
   display: flex;
+  height: 78px;
   min-width: 0;
+  flex: none;
   flex-direction: column;
   gap: 4px;
   padding: 10px 11px 12px;
@@ -739,12 +912,6 @@ function previewCover(torrent) {
 
   .list-head > span:nth-child(5) {
     display: none;
-  }
-
-  .grid-body {
-    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-    gap: 11px;
-    padding: 12px;
   }
 }
 

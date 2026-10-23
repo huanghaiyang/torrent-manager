@@ -7,6 +7,7 @@ import { fetchCoverImage, findGameCover, isGamerskyPageUrl, lookupGameRating } f
 import { pickExecutable } from './lib/dialogs.js'
 import { listDrives } from './lib/drives.js'
 import { HttpError } from './lib/errors.js'
+import { listParsedSummaries, readParsedTorrent, saveParsedTorrent } from './lib/parseStore.js'
 import { getQuickLocations, listDirectory } from './lib/filebrowser.js'
 import { scanDirectory } from './lib/scanner.js'
 import { MAX_TORRENT_BYTES, parseTorrentBuffer } from './lib/torrent.js'
@@ -185,13 +186,39 @@ app.post(
   }),
 )
 
+app.get(
+  '/api/torrents/parsed',
+  asyncRoute(async (req, res) => {
+    res.json({ entries: await listParsedSummaries() })
+  }),
+)
+
 app.post(
   '/api/torrent/parse',
   asyncRoute(async (req, res) => {
     const filePath = requireAbsolutePath(req.body?.path, '种子路径')
+    const force = Boolean(req.body?.force)
     const stat = await requireTorrentFile(filePath)
     if (stat.size > MAX_TORRENT_BYTES) {
       throw new HttpError(413, '种子文件超过 64 MB，暂不支持解析')
+    }
+
+    if (!force) {
+      const cached = await readParsedTorrent(filePath, stat)
+      if (cached) {
+        res.json({
+          torrent: {
+            ...cached.torrent,
+            path: filePath,
+            fileName: path.basename(filePath),
+            fileSize: stat.size,
+            fileMtimeMs: stat.mtimeMs,
+          },
+          parsedAt: cached.parsedAt,
+          cached: true,
+        })
+        return
+      }
     }
 
     const buffer = await fsp.readFile(filePath)
@@ -202,6 +229,8 @@ app.post(
       throw new HttpError(422, `种子解析失败：${error.message}`)
     }
 
+    const { parsedAt } = await saveParsedTorrent(filePath, stat, parsed)
+
     res.json({
       torrent: {
         ...parsed,
@@ -210,7 +239,8 @@ app.post(
         fileSize: stat.size,
         fileMtimeMs: stat.mtimeMs,
       },
-      parsedAt: new Date().toISOString(),
+      parsedAt,
+      cached: false,
     })
   }),
 )
