@@ -85,8 +85,12 @@ const coverPreview = ref(null)
 let scanController = null
 let scanSession = null
 let saveTimer = null
-let coverSaveTimer = null
 let libraryReady = false
+
+const coverDirty = new Set()
+const coverRemovals = new Set()
+let coverFlushTimer = null
+let coverFlushBusy = false
 
 const toasts = ref([])
 let toastSequence = 0
@@ -353,7 +357,50 @@ function restoreLibrary() {
   libraryReady = true
 }
 
-function restoreCovers() {
+function normalizeCoverEntry(raw) {
+  if (!raw || typeof raw.path !== 'string' || typeof raw.cover !== 'string' || !raw.cover) {
+    return null
+  }
+
+  return {
+    path: raw.path,
+    cover: raw.cover,
+    source: typeof raw.source === 'string' ? raw.source : '',
+    title: typeof raw.title === 'string' ? raw.title : '',
+    pageUrl: typeof raw.pageUrl === 'string' ? raw.pageUrl : '',
+    query: typeof raw.query === 'string' ? raw.query : '',
+    rating: typeof raw.rating === 'number' ? raw.rating : null,
+    updatedAt: Number(raw.updatedAt) || 0,
+  }
+}
+
+/**
+ * 封面元数据与图片都保存在后端本地（data/covers），浏览器只保留内存缓存。
+ */
+async function loadCovers() {
+  let entries = []
+
+  try {
+    const payload = await api.listCovers()
+    entries = Array.isArray(payload?.entries) ? payload.entries : []
+  } catch (error) {
+    console.warn('[covers] 读取本地封面失败', error)
+    return
+  }
+
+  for (const entry of entries) {
+    const normalized = normalizeCoverEntry(entry)
+    if (normalized) covers.set(normalized.path, normalized)
+  }
+
+  // 后端可能只保存了部分封面，浏览器里遗留的旧数据仍需补迁。
+  await migrateLegacyCovers()
+}
+
+/**
+ * 把旧版本保存在 localStorage 中的封面一次性迁移到后端。
+ */
+async function migrateLegacyCovers() {
   let raw = null
   try {
     raw = JSON.parse(localStorage.getItem(COVERS_KEY) || 'null')
@@ -362,42 +409,90 @@ function restoreCovers() {
   }
   if (!raw || typeof raw !== 'object') return
 
-  for (const [torrentPath, entry] of Object.entries(raw)) {
-    if (!entry || typeof entry.cover !== 'string' || !entry.cover) continue
-    covers.set(torrentPath, {
-      cover: entry.cover,
-      title: typeof entry.title === 'string' ? entry.title : '',
-      pageUrl: typeof entry.pageUrl === 'string' ? entry.pageUrl : '',
-      query: typeof entry.query === 'string' ? entry.query : '',
-      rating:
-        typeof entry.rating === 'number' ? entry.rating : entry.rating === null ? null : undefined,
-      updatedAt: Number(entry.updatedAt) || 0,
-    })
-  }
-}
+  const entries = Object.entries(raw)
+    .map(([torrentPath, entry]) => normalizeCoverEntry({ path: torrentPath, ...entry }))
+    .filter(Boolean)
 
-function saveCovers() {
-  if (coverSaveTimer) {
-    window.clearTimeout(coverSaveTimer)
-    coverSaveTimer = null
+  if (!entries.length) {
+    localStorage.removeItem(COVERS_KEY)
+    return
   }
 
-  const payload = {}
-  for (const [torrentPath, entry] of covers) payload[torrentPath] = entry
+  const pending = entries.filter((entry) => !covers.has(entry.path))
+  if (!pending.length) {
+    localStorage.removeItem(COVERS_KEY)
+    return
+  }
+
+  for (const entry of pending) covers.set(entry.path, entry)
 
   try {
-    localStorage.setItem(COVERS_KEY, JSON.stringify(payload))
+    const payload = await api.saveCovers(pending)
+    for (const entry of payload?.entries || []) {
+      const normalized = normalizeCoverEntry(entry)
+      if (normalized) covers.set(normalized.path, normalized)
+    }
+    localStorage.removeItem(COVERS_KEY)
+    notify(`已把 ${pending.length} 个封面迁移到本地存储`, 'info', { timeout: 4500 })
   } catch (error) {
-    console.warn('[covers] 保存封面索引失败', error)
+    console.warn('[covers] 旧封面迁移失败', error)
   }
 }
 
-function queueCoverSave() {
-  if (coverSaveTimer) window.clearTimeout(coverSaveTimer)
-  coverSaveTimer = window.setTimeout(() => {
-    coverSaveTimer = null
-    saveCovers()
-  }, 800)
+function queueCoverSave(torrentPath) {
+  coverDirty.add(torrentPath)
+  coverRemovals.delete(torrentPath)
+  scheduleCoverFlush(800)
+}
+
+function queueCoverRemoval(paths) {
+  for (const torrentPath of paths) {
+    coverRemovals.add(torrentPath)
+    coverDirty.delete(torrentPath)
+  }
+  scheduleCoverFlush(300)
+}
+
+function scheduleCoverFlush(delay) {
+  if (coverFlushTimer) window.clearTimeout(coverFlushTimer)
+  coverFlushTimer = window.setTimeout(() => {
+    coverFlushTimer = null
+    flushCovers()
+  }, delay)
+}
+
+async function flushCovers() {
+  if (coverFlushBusy) {
+    scheduleCoverFlush(600)
+    return
+  }
+  if (!coverDirty.size && !coverRemovals.size) return
+
+  const entries = []
+  for (const torrentPath of coverDirty) {
+    const entry = covers.get(torrentPath)
+    if (entry) entries.push({ path: torrentPath, ...entry })
+  }
+  const removals = [...coverRemovals]
+  coverDirty.clear()
+  coverRemovals.clear()
+  coverFlushBusy = true
+
+  try {
+    if (entries.length) {
+      const payload = await api.saveCovers(entries)
+      for (const entry of payload?.entries || []) {
+        const normalized = normalizeCoverEntry(entry)
+        if (normalized && covers.has(normalized.path)) covers.set(normalized.path, normalized)
+      }
+    }
+    if (removals.length) await api.deleteCovers(removals)
+  } catch (error) {
+    console.warn('[covers] 同步封面到本地失败', error)
+  } finally {
+    coverFlushBusy = false
+    if (coverDirty.size || coverRemovals.size) scheduleCoverFlush(500)
+  }
 }
 
 function restoreViewMode() {
@@ -473,7 +568,7 @@ async function updateCovers() {
           const rating = typeof payload?.rating === 'number' ? payload.rating : null
           covers.set(torrent.path, { ...existing, rating })
           rated += 1
-          queueCoverSave()
+          queueCoverSave(torrent.path)
         } catch (error) {
           failed += 1
           lastError = error.message || '请求失败'
@@ -492,6 +587,7 @@ async function updateCovers() {
         if (match?.cover) {
           covers.set(torrent.path, {
             cover: match.cover,
+            source: match.source || '',
             title: match.title || '',
             pageUrl: match.pageUrl || '',
             query: payload.query || '',
@@ -499,7 +595,7 @@ async function updateCovers() {
             updatedAt: Date.now(),
           })
           found += 1
-          queueCoverSave()
+          queueCoverSave(torrent.path)
         } else {
           missing += 1
         }
@@ -516,7 +612,7 @@ async function updateCovers() {
     Array.from({ length: Math.min(COVER_WORKERS, queue.length) }, () => worker()),
   )
 
-  saveCovers()
+  await flushCovers()
   coversBusy.value = false
 
   if (found === 0 && rated === 0 && failed > 0) {
@@ -806,7 +902,7 @@ async function removeSource(source) {
 
   torrents.value = torrents.value.filter((torrent) => torrent.source !== source.id)
   for (const torrentPath of removedPaths) covers.delete(torrentPath)
-  saveCovers()
+  queueCoverRemoval(removedPaths)
   removeSourceFromLibrary(source.id)
   if (filters.source === source.id) filters.source = 'all'
   if (selectedPath.value && !torrents.value.some((torrent) => torrent.path === selectedPath.value)) {
@@ -837,8 +933,9 @@ async function clearLibrary() {
   filters.query = ''
   parseCache.clear()
   parseStates.clear()
+  const removedCoverPaths = [...covers.keys()]
   covers.clear()
-  saveCovers()
+  queueCoverRemoval(removedCoverPaths)
   notify('种子库已清空', 'success')
 }
 
@@ -1027,7 +1124,7 @@ function onWindowResize() {
 
 onMounted(() => {
   restoreLibrary()
-  restoreCovers()
+  loadCovers()
   restoreViewMode()
   loadParsedSummaries()
   loadDrives(false)
@@ -1043,7 +1140,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', onWindowResize)
   scanController?.abort()
   if (saveTimer) window.clearTimeout(saveTimer)
-  if (coverSaveTimer) window.clearTimeout(coverSaveTimer)
+  if (coverFlushTimer) window.clearTimeout(coverFlushTimer)
 })
 </script>
 

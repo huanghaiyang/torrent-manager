@@ -3,7 +3,14 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { fetchCoverImage, findGameCover, isGamerskyPageUrl, lookupGameRating } from './lib/covers.js'
+import { findGameCover, isCoverImageUrl, isGamerskyPageUrl, lookupGameRating } from './lib/covers.js'
+import {
+  deleteCoverEntries,
+  ensureLocalCoverImage,
+  listCoverEntries,
+  readCoverImage,
+  upsertCoverEntries,
+} from './lib/coverStore.js'
 import { pickExecutable } from './lib/dialogs.js'
 import { listDrives } from './lib/drives.js'
 import { HttpError } from './lib/errors.js'
@@ -311,12 +318,50 @@ app.post(
 )
 
 app.get(
+  '/api/covers',
+  asyncRoute(async (req, res) => {
+    res.json({ entries: await listCoverEntries() })
+  }),
+)
+
+app.post(
+  '/api/covers',
+  asyncRoute(async (req, res) => {
+    const entries = Array.isArray(req.body?.entries) ? req.body.entries : []
+    if (!entries.length) throw new HttpError(400, '请提供封面数据')
+    if (entries.length > 2000) throw new HttpError(400, '一次最多同步 2000 条封面')
+    res.json({ entries: await upsertCoverEntries(entries) })
+  }),
+)
+
+app.delete(
+  '/api/covers',
+  asyncRoute(async (req, res) => {
+    const paths = Array.isArray(req.body?.paths) ? req.body.paths : []
+    res.json({ removed: await deleteCoverEntries(paths) })
+  }),
+)
+
+app.get(
+  '/api/covers/local/:file',
+  asyncRoute(async (req, res) => {
+    const image = await readCoverImage(req.params.file)
+    res.setHeader('Content-Type', image.contentType)
+    res.setHeader('Cache-Control', 'public, max-age=604800, immutable')
+    res.send(image.buffer)
+  }),
+)
+
+app.get(
   '/api/covers/image',
   asyncRoute(async (req, res) => {
     const url = typeof req.query?.url === 'string' ? req.query.url : ''
     if (!url) throw new HttpError(400, '缺少封面地址')
+    if (!isCoverImageUrl(url)) throw new HttpError(400, '不支持的封面地址')
 
-    const image = await fetchCoverImage(url)
+    // 优先读取本地缓存；未缓存时下载并保存到 data/covers/images。
+    const fileName = await ensureLocalCoverImage(url)
+    const image = await readCoverImage(fileName)
     res.setHeader('Content-Type', image.contentType)
     res.setHeader('Cache-Control', 'public, max-age=604800, immutable')
     res.send(image.buffer)

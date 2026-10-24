@@ -6,7 +6,10 @@ const SEARCH_URLS = [
 ]
 const SEARCH_TIMEOUT_MS = 9000
 const IMAGE_TIMEOUT_MS = 12000
-const SEARCH_INTERVAL_MS = 1200
+const REQUEST_INTERVAL_MS = 1100
+const REQUEST_JITTER_MS = 450
+const RETRY_BASE_DELAY_MS = 3000
+const RATE_LIMIT_COOLDOWN_MS = 20000
 const MAX_SEARCH_ATTEMPTS = 3
 const CACHE_TTL_MS = 30 * 60 * 1000
 const RATING_CACHE_TTL_MS = 24 * 60 * 60 * 1000
@@ -244,25 +247,53 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-let searchQueue = Promise.resolve()
-let lastSearchAt = 0
+let requestQueue = Promise.resolve()
+let lastRequestAt = 0
+let cooldownUntil = 0
 
 /**
- * 串行化并限速所有搜索请求，避免触发游民星空的访问频率限制。
+ * 串行化并限速所有游民星空请求（搜索、评分、封面图片），
+ * 每次请求间隔 1.1 秒并附加随机抖动，避免触发访问频率限制。
  *
  * @template T
  * @param {() => Promise<T>} task
  * @returns {Promise<T>}
  */
-function scheduleSearch(task) {
-  const run = searchQueue.then(async () => {
-    const wait = Math.max(0, SEARCH_INTERVAL_MS - (Date.now() - lastSearchAt))
-    if (wait > 0) await sleep(wait)
-    lastSearchAt = Date.now()
+function scheduleRequest(task) {
+  const run = requestQueue.then(async () => {
+    const now = Date.now()
+    const wait = Math.max(0, lastRequestAt + REQUEST_INTERVAL_MS - now, cooldownUntil - now)
+    if (wait > 0) await sleep(wait + Math.floor(Math.random() * REQUEST_JITTER_MS))
+    lastRequestAt = Date.now()
     return task()
   })
-  searchQueue = run.catch(() => {})
+  requestQueue = run.catch(() => {})
   return run
+}
+
+function isRateLimitError(error) {
+  const message = String(error?.message || '')
+  return (
+    /HTTP (?:403|429|503)/.test(message) || error?.status === 403 || error?.status === 429
+  )
+}
+
+async function requestWithRetry(task, label) {
+  let lastError = null
+
+  for (let attempt = 0; attempt < MAX_SEARCH_ATTEMPTS; attempt += 1) {
+    try {
+      return await scheduleRequest(task)
+    } catch (error) {
+      lastError = error
+      if (!isRateLimitError(error)) throw error
+      // 触发限流时全局冷却一段时间，避免持续请求导致封禁。
+      cooldownUntil = Math.max(cooldownUntil, Date.now() + RATE_LIMIT_COOLDOWN_MS)
+      await sleep(RETRY_BASE_DELAY_MS * (attempt + 1))
+    }
+  }
+
+  throw lastError || new HttpError(502, `${label}失败`)
 }
 
 async function requestHtml(url) {
@@ -287,20 +318,7 @@ async function requestHtml(url) {
 }
 
 async function fetchSearchHtml(url) {
-  let lastError = null
-
-  for (let attempt = 0; attempt < MAX_SEARCH_ATTEMPTS; attempt += 1) {
-    try {
-      return await scheduleSearch(() => requestHtml(url))
-    } catch (error) {
-      lastError = error
-      const rateLimited = /HTTP 429/.test(error.message || '')
-      if (!rateLimited) throw error
-      await sleep(2500 * (attempt + 1))
-    }
-  }
-
-  throw lastError || new HttpError(502, '游民星空搜索失败')
+  return requestWithRetry(() => requestHtml(url), '游民星空搜索')
 }
 
 async function searchCandidates(query) {
@@ -360,19 +378,7 @@ async function requestJson(url) {
 }
 
 async function fetchJson(url) {
-  let lastError = null
-
-  for (let attempt = 0; attempt < MAX_SEARCH_ATTEMPTS; attempt += 1) {
-    try {
-      return await scheduleSearch(() => requestJson(url))
-    } catch (error) {
-      lastError = error
-      if (!/HTTP 429/.test(error.message || '')) throw error
-      await sleep(2500 * (attempt + 1))
-    }
-  }
-
-  throw lastError || new HttpError(502, '游民星空评分接口失败')
+  return requestWithRetry(() => requestJson(url), '游民星空评分接口')
 }
 
 async function loadGameRating(pageUrl) {
@@ -519,10 +525,7 @@ export function isCoverImageUrl(value) {
   }
 }
 
-export async function fetchCoverImage(value) {
-  const url = String(value || '')
-  if (!isCoverImageUrl(url)) throw new HttpError(400, '不支持的封面地址')
-
+async function requestImage(url) {
   let response = null
   try {
     response = await fetch(url, {
@@ -545,4 +548,12 @@ export async function fetchCoverImage(value) {
     contentType,
     buffer: Buffer.from(await response.arrayBuffer()),
   }
+}
+
+export async function fetchCoverImage(value) {
+  const url = String(value || '')
+  if (!isCoverImageUrl(url)) throw new HttpError(400, '不支持的封面地址')
+
+  // 图片下载同样进入全局限速队列，避免批量抓取时请求过密。
+  return requestWithRetry(() => requestImage(url), '封面图片下载')
 }

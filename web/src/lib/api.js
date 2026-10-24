@@ -66,6 +66,9 @@ export const api = {
     request('/api/covers/search', { method: 'POST', body: { name } }),
   lookupRating: (pageUrl) =>
     request('/api/covers/rating', { method: 'POST', body: { pageUrl } }),
+  listCovers: () => request('/api/covers'),
+  saveCovers: (entries) => request('/api/covers', { method: 'POST', body: { entries } }),
+  deleteCovers: (paths) => request('/api/covers', { method: 'DELETE', body: { paths } }),
 }
 
 /**
