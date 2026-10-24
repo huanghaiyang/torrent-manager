@@ -20,6 +20,7 @@ const props = defineProps({
   parseStates: { type: Map, default: () => new Map() },
   summaries: { type: Map, default: () => new Map() },
   covers: { type: Map, default: () => new Map() },
+  favorites: { type: Set, default: () => new Set() },
   tools: { type: Array, default: () => [] },
   defaultToolId: { type: String, default: 'system' },
   scanning: { type: Boolean, default: false },
@@ -35,6 +36,7 @@ const emit = defineEmits([
   'open',
   'reveal',
   'preview-cover',
+  'toggle-favorite',
   'manage-tools',
   'browse',
   'scan',
@@ -306,6 +308,16 @@ function previewCover(torrent) {
               </button>
               <button
                 class="grid-action"
+                :class="{ 'is-favorite': favorites.has(torrent.path) }"
+                type="button"
+                :title="favorites.has(torrent.path) ? '取消收藏' : '加入收藏'"
+                :aria-label="favorites.has(torrent.path) ? '取消收藏' : '加入收藏'"
+                @click="emit('toggle-favorite', torrent)"
+              >
+                <Star :size="13" :fill="favorites.has(torrent.path) ? 'currentColor' : 'none'" />
+              </button>
+              <button
+                class="grid-action"
                 type="button"
                 title="在文件夹中显示"
                 aria-label="在文件夹中显示"
@@ -334,6 +346,7 @@ function previewCover(torrent) {
           :parsed="summaryOf(torrent)"
           :parse-state="parseStates.get(torrent.path) || null"
           :cover="covers.get(torrent.path) || null"
+          :favorite="favorites.has(torrent.path)"
           :tools="tools"
           :default-tool-id="defaultToolId"
           @open-details="emit('open-details', $event)"
@@ -341,6 +354,7 @@ function previewCover(torrent) {
           @open="emit('open', $event)"
           @reveal="emit('reveal', $event)"
           @preview-cover="emit('preview-cover', $event)"
+          @toggle-favorite="emit('toggle-favorite', $event)"
           @manage-tools="emit('manage-tools')"
         />
       </div>
@@ -636,6 +650,12 @@ function previewCover(torrent) {
   border-color: rgba(94, 234, 212, 0.32);
   background: var(--accent-soft);
   color: #a7f3d0;
+}
+
+.grid-action.is-favorite {
+  border-color: rgba(250, 204, 21, 0.38);
+  background: rgba(250, 204, 21, 0.14);
+  color: #facc15;
 }
 
 .grid-info {

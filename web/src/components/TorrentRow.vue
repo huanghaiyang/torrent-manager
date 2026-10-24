@@ -23,6 +23,7 @@ const props = defineProps({
   parsed: { type: Object, default: null },
   parseState: { type: Object, default: null },
   cover: { type: Object, default: null },
+  favorite: { type: Boolean, default: false },
   tools: { type: Array, default: () => [] },
   defaultToolId: { type: String, default: 'system' },
   selected: { type: Boolean, default: false },
@@ -34,6 +35,7 @@ const emit = defineEmits([
   'open',
   'reveal',
   'preview-cover',
+  'toggle-favorite',
   'manage-tools',
 ])
 
@@ -160,6 +162,18 @@ function reveal() {
     </div>
 
     <div class="actions-cell" @click.stop>
+      <button
+        class="icon-btn fav-btn"
+        :class="{ active: favorite }"
+        type="button"
+        :title="favorite ? '取消收藏' : '加入收藏'"
+        :aria-label="favorite ? '取消收藏' : '加入收藏'"
+        :aria-pressed="favorite"
+        @click="emit('toggle-favorite', torrent)"
+      >
+        <Star :size="16" :fill="favorite ? 'currentColor' : 'none'" />
+      </button>
+
       <button
         class="btn btn-sm parse-btn"
         :class="{ 'btn-soft': parsed }"
@@ -462,6 +476,19 @@ function reveal() {
 .parse-btn {
   min-width: 74px;
   color: var(--muted);
+}
+
+.fav-btn {
+  color: var(--muted-2);
+}
+
+.fav-btn:hover {
+  color: #facc15;
+}
+
+.fav-btn.active {
+  color: #facc15;
+  background: rgba(250, 204, 21, 0.12);
 }
 
 .parse-btn:hover:not(:disabled) {

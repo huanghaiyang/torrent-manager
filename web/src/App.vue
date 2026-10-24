@@ -13,6 +13,7 @@ import {
   Search,
   Settings2,
   ShieldCheck,
+  Star,
   Trash2,
   X,
 } from 'lucide-vue-next'
@@ -38,6 +39,7 @@ const LIBRARY_KEY = 'torrent-vault.library.v1'
 const LAST_PATH_KEY = 'torrent-vault.last-path'
 const RECURSIVE_KEY = 'torrent-vault.recursive'
 const COVERS_KEY = 'torrent-vault.covers.v1'
+const FAVORITES_KEY = 'torrent-vault.favorites.v1'
 const VIEW_MODE_KEY = 'torrent-vault.view-mode'
 const COVER_WORKERS = 3
 
@@ -64,7 +66,10 @@ const filters = reactive({
   source: 'all',
   sort: 'mtime',
   order: 'desc',
+  favoritesOnly: false,
 })
+
+const favorites = reactive(new Set())
 
 const scanning = reactive({
   active: false,
@@ -139,6 +144,10 @@ const visibleTorrents = computed(() => {
     list = list.filter((torrent) => torrent.source === filters.source)
   }
 
+  if (filters.favoritesOnly) {
+    list = list.filter((torrent) => favorites.has(torrent.path))
+  }
+
   const query = filters.query.trim().toLowerCase()
   if (query) {
     list = list.filter(
@@ -204,7 +213,9 @@ const totalFileSize = computed(() =>
   torrents.value.reduce((sum, torrent) => sum + (Number(torrent.size) || 0), 0),
 )
 
-const hasFilters = computed(() => filters.source !== 'all' || Boolean(filters.query.trim()))
+const hasFilters = computed(
+  () => filters.source !== 'all' || Boolean(filters.query.trim()) || filters.favoritesOnly,
+)
 
 const defaultToolName = computed(
   () => tools.value.find((tool) => tool.id === defaultToolId.value)?.name || '系统默认应用',
@@ -497,6 +508,36 @@ async function flushCovers() {
 
 function restoreViewMode() {
   viewMode.value = localStorage.getItem(VIEW_MODE_KEY) === 'grid' ? 'grid' : 'list'
+}
+
+function restoreFavorites() {
+  let raw = null
+  try {
+    raw = JSON.parse(localStorage.getItem(FAVORITES_KEY) || 'null')
+  } catch {
+    raw = null
+  }
+  if (!Array.isArray(raw)) return
+  for (const torrentPath of raw) {
+    if (typeof torrentPath === 'string' && torrentPath) favorites.add(torrentPath)
+  }
+}
+
+function saveFavorites() {
+  try {
+    localStorage.setItem(FAVORITES_KEY, JSON.stringify([...favorites]))
+  } catch {
+    // 忽略存储异常
+  }
+}
+
+function toggleFavorite(torrent) {
+  const torrentPath = typeof torrent === 'string' ? torrent : torrent?.path
+  if (!torrentPath) return
+
+  if (favorites.has(torrentPath)) favorites.delete(torrentPath)
+  else favorites.add(torrentPath)
+  saveFavorites()
 }
 
 function setViewMode(mode) {
@@ -901,7 +942,11 @@ async function removeSource(source) {
     .map((torrent) => torrent.path)
 
   torrents.value = torrents.value.filter((torrent) => torrent.source !== source.id)
-  for (const torrentPath of removedPaths) covers.delete(torrentPath)
+  for (const torrentPath of removedPaths) {
+    covers.delete(torrentPath)
+    favorites.delete(torrentPath)
+  }
+  saveFavorites()
   queueCoverRemoval(removedPaths)
   removeSourceFromLibrary(source.id)
   if (filters.source === source.id) filters.source = 'all'
@@ -933,6 +978,9 @@ async function clearLibrary() {
   filters.query = ''
   parseCache.clear()
   parseStates.clear()
+  favorites.clear()
+  saveFavorites()
+  filters.favoritesOnly = false
   const removedCoverPaths = [...covers.keys()]
   covers.clear()
   queueCoverRemoval(removedCoverPaths)
@@ -942,6 +990,7 @@ async function clearLibrary() {
 function clearFilters() {
   filters.query = ''
   filters.source = 'all'
+  filters.favoritesOnly = false
 }
 
 function selectSource(id) {
@@ -1126,6 +1175,7 @@ onMounted(() => {
   restoreLibrary()
   loadCovers()
   restoreViewMode()
+  restoreFavorites()
   loadParsedSummaries()
   loadDrives(false)
   loadTools(false, true)
@@ -1237,6 +1287,16 @@ onBeforeUnmount(() => {
             {{ formatNumber(visibleTorrents.length) }} 个结果
           </div>
           <button
+            class="btn tools-btn fav-filter-btn"
+            :class="{ active: filters.favoritesOnly }"
+            type="button"
+            :title="filters.favoritesOnly ? '显示全部种子' : '只看已收藏的种子'"
+            @click="filters.favoritesOnly = !filters.favoritesOnly"
+          >
+            <Star :size="15" :fill="filters.favoritesOnly ? 'currentColor' : 'none'" />
+            <span>收藏 {{ favorites.size }}</span>
+          </button>
+          <button
             class="btn tools-btn cover-btn"
             type="button"
             :disabled="coversBusy || scanning.active || visibleTorrents.length === 0"
@@ -1318,6 +1378,15 @@ onBeforeUnmount(() => {
               来源：{{ currentTitle }}
               <X :size="11" />
             </button>
+            <button
+              v-if="filters.favoritesOnly"
+              class="filter-tag"
+              type="button"
+              @click="filters.favoritesOnly = false"
+            >
+              仅收藏：{{ favorites.size }} 个
+              <X :size="11" />
+            </button>
             <button v-if="filters.query" class="filter-tag" type="button" @click="filters.query = ''">
               关键词：{{ filters.query }}
               <X :size="11" />
@@ -1331,6 +1400,7 @@ onBeforeUnmount(() => {
             :parse-states="parseStates"
             :summaries="parsedSummaries"
             :covers="covers"
+            :favorites="favorites"
             :tools="tools"
             :default-tool-id="defaultToolId"
             :view-mode="viewMode"
@@ -1343,6 +1413,7 @@ onBeforeUnmount(() => {
             @open="handleOpen"
             @reveal="handleReveal"
             @preview-cover="openCoverPreview"
+            @toggle-favorite="toggleFavorite"
             @manage-tools="openTools"
             @browse="chooseFolder"
             @scan="startScan()"
@@ -1576,6 +1647,12 @@ onBeforeUnmount(() => {
 .tools-btn {
   height: 34px;
   font-size: 12px;
+}
+
+.fav-filter-btn.active {
+  border-color: rgba(250, 204, 21, 0.4);
+  background: rgba(250, 204, 21, 0.12);
+  color: #facc15;
 }
 
 .view-switch {
