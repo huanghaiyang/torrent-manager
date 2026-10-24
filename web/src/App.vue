@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
+  Box,
   ChevronRight,
   ImagePlus,
   Layers3,
@@ -507,7 +508,8 @@ async function flushCovers() {
 }
 
 function restoreViewMode() {
-  viewMode.value = localStorage.getItem(VIEW_MODE_KEY) === 'grid' ? 'grid' : 'list'
+  const stored = localStorage.getItem(VIEW_MODE_KEY)
+  viewMode.value = stored === 'grid' || stored === '3d' ? stored : 'list'
 }
 
 function restoreFavorites() {
@@ -541,7 +543,7 @@ function toggleFavorite(torrent) {
 }
 
 function setViewMode(mode) {
-  viewMode.value = mode === 'grid' ? 'grid' : 'list'
+  viewMode.value = ['list', 'grid', '3d'].includes(mode) ? mode : 'list'
   try {
     localStorage.setItem(VIEW_MODE_KEY, viewMode.value)
   } catch {
@@ -1280,6 +1282,16 @@ onBeforeUnmount(() => {
               @click="setViewMode('grid')"
             >
               <LayoutGrid :size="14" />
+            </button>
+            <button
+              class="view-btn"
+              :class="{ active: viewMode === '3d' }"
+              type="button"
+              title="3D 空间视图"
+              aria-label="3D 空间视图"
+              @click="setViewMode('3d')"
+            >
+              <Box :size="14" />
             </button>
           </div>
           <div class="result-pill">

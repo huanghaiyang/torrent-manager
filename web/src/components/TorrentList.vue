@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   FileArchive,
   FolderOpen,
@@ -13,6 +13,9 @@ import {
 } from 'lucide-vue-next'
 import TorrentRow from './TorrentRow.vue'
 import { formatBytes, sourceLabel } from '../lib/format.js'
+
+// three.js 体积较大，仅在切换到 3D 视图时按需加载。
+const TorrentGallery3D = defineAsyncComponent(() => import('./TorrentGallery3D.vue'))
 
 const props = defineProps({
   torrents: { type: Array, default: () => [] },
@@ -66,6 +69,12 @@ let scrollFrame = 0
 let mobileQuery = null
 
 const isGrid = computed(() => props.viewMode === 'grid')
+
+const hintText = computed(() => {
+  if (props.viewMode === 'grid') return '点击任意卡片查看种子详情'
+  if (props.viewMode === '3d') return '拖拽旋转视角，滚轮缩放，点击封面查看种子详情'
+  return '点击任意行查看种子详情'
+})
 
 const virtualEnabled = computed(
   () => props.torrents.length >= VIRTUAL_MIN && !narrow.value && viewportHeight.value > 0,
@@ -338,7 +347,7 @@ function previewCover(torrent) {
         </article>
       </div>
 
-      <div v-else ref="bodyRef" class="list-body" :style="listBodyStyle">
+      <div v-else-if="viewMode === 'list'" ref="bodyRef" class="list-body" :style="listBodyStyle">
         <TorrentRow
           v-for="torrent in visibleItems"
           :key="torrent.path"
@@ -359,6 +368,13 @@ function previewCover(torrent) {
         />
       </div>
 
+      <TorrentGallery3D
+        v-else-if="viewMode === '3d'"
+        :torrents="torrents"
+        :covers="covers"
+        @open-details="emit('open-details', $event)"
+      />
+
       <div class="list-foot">
         <span>
           显示
@@ -366,7 +382,7 @@ function previewCover(torrent) {
           <template v-if="total !== torrents.length"> / {{ total }}</template>
           个种子
         </span>
-        <span>点击任意{{ viewMode === 'grid' ? '卡片' : '行' }}查看种子详情</span>
+        <span>{{ hintText }}</span>
       </div>
     </div>
 
