@@ -458,7 +458,7 @@ const server = app.listen(PORT, HOST, () => {
   if (fs.existsSync(INDEX_FILE)) {
     console.log(`[torrent-vault] UI   ${base}`)
   } else {
-    console.log('[torrent-vault] UI   开发模式请运行 npm run dev（Vite: http://localhost:5173）')
+    console.log('[torrent-vault] UI   开发模式请运行 npm run dev（Vite: http://localhost:4001）')
   }
 })
 
