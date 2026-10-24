@@ -524,9 +524,11 @@ function previewCover(torrent) {
 }
 
 .grid-cover-btn {
+  position: relative;
   display: block;
   width: 100%;
   height: 100%;
+  overflow: hidden;
   padding: 0;
   border: 0;
   background: transparent;
@@ -543,6 +545,31 @@ function previewCover(torrent) {
 
 .grid-card:hover .grid-cover-btn img {
   transform: scale(1.035);
+}
+
+/* 鼠标悬停时从封面左侧扫过的高光，模拟玻璃反光 */
+.grid-cover-btn::after {
+  content: '';
+  position: absolute;
+  inset: -12% -80%;
+  background: linear-gradient(
+    115deg,
+    transparent 38%,
+    rgba(255, 255, 255, 0.34) 48%,
+    rgba(255, 255, 255, 0.08) 56%,
+    transparent 66%
+  );
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-70%);
+  transition:
+    transform 700ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    opacity 260ms ease;
+}
+
+.grid-cover-btn:hover::after {
+  opacity: 1;
+  transform: translateX(70%);
 }
 
 .grid-cover-empty {

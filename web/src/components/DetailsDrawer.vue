@@ -587,6 +587,7 @@ onBeforeUnmount(() => {
 }
 
 .drawer-icon.has-cover {
+  position: relative;
   width: 60px;
   height: 80px;
   overflow: hidden;
@@ -609,6 +610,31 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+/* 鼠标悬停时从封面左侧扫过的高光，模拟玻璃反光 */
+.drawer-icon.has-cover::after {
+  content: '';
+  position: absolute;
+  inset: -12% -80%;
+  background: linear-gradient(
+    115deg,
+    transparent 38%,
+    rgba(255, 255, 255, 0.38) 48%,
+    rgba(255, 255, 255, 0.09) 56%,
+    transparent 66%
+  );
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-70%);
+  transition:
+    transform 680ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    opacity 250ms ease;
+}
+
+.drawer-icon.has-cover:hover::after {
+  opacity: 1;
+  transform: translateX(70%);
 }
 
 .cover-meta {

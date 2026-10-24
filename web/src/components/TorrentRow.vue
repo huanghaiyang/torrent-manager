@@ -298,6 +298,7 @@ function reveal() {
 }
 
 .file-icon.has-cover {
+  position: relative;
   width: 38px;
   height: 50px;
   overflow: hidden;
@@ -321,6 +322,31 @@ function reveal() {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+/* 鼠标悬停时从封面左侧扫过的高光，模拟玻璃反光 */
+.file-icon.has-cover::after {
+  content: '';
+  position: absolute;
+  inset: -12% -80%;
+  background: linear-gradient(
+    115deg,
+    transparent 38%,
+    rgba(255, 255, 255, 0.42) 48%,
+    rgba(255, 255, 255, 0.1) 56%,
+    transparent 66%
+  );
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-70%);
+  transition:
+    transform 650ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    opacity 240ms ease;
+}
+
+.file-icon.has-cover:hover::after {
+  opacity: 1;
+  transform: translateX(70%);
 }
 
 .file-copy {
