@@ -24,6 +24,7 @@ const props = defineProps({
   summaries: { type: Map, default: () => new Map() },
   covers: { type: Map, default: () => new Map() },
   favorites: { type: Set, default: () => new Set() },
+  coverFetching: { type: Set, default: () => new Set() },
   tools: { type: Array, default: () => [] },
   defaultToolId: { type: String, default: 'system' },
   scanning: { type: Boolean, default: false },
@@ -40,6 +41,7 @@ const emit = defineEmits([
   'reveal',
   'preview-cover',
   'toggle-favorite',
+  'fetch-cover',
   'manage-tools',
   'browse',
   'scan',
@@ -356,6 +358,7 @@ function previewCover(torrent) {
           :parse-state="parseStates.get(torrent.path) || null"
           :cover="covers.get(torrent.path) || null"
           :favorite="favorites.has(torrent.path)"
+          :cover-fetching="coverFetching.has(torrent.path)"
           :tools="tools"
           :default-tool-id="defaultToolId"
           @open-details="emit('open-details', $event)"
@@ -364,6 +367,7 @@ function previewCover(torrent) {
           @reveal="emit('reveal', $event)"
           @preview-cover="emit('preview-cover', $event)"
           @toggle-favorite="emit('toggle-favorite', $event)"
+          @fetch-cover="emit('fetch-cover', $event)"
           @manage-tools="emit('manage-tools')"
         />
       </div>
@@ -467,7 +471,7 @@ function previewCover(torrent) {
 
 .list-head {
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) 128px 118px 86px 142px 258px;
+  grid-template-columns: minmax(260px, 1fr) 128px 118px 86px 142px 298px;
   gap: 14px;
   padding: 11px 16px;
   border-bottom: 1px solid var(--line);
@@ -960,7 +964,7 @@ function previewCover(torrent) {
 
 @media (max-width: 1280px) {
   .list-head {
-    grid-template-columns: minmax(240px, 1fr) 118px 86px 132px 248px;
+    grid-template-columns: minmax(240px, 1fr) 118px 86px 132px 288px;
   }
 
   .list-head > span:nth-child(3) {
@@ -970,7 +974,7 @@ function previewCover(torrent) {
 
 @media (max-width: 900px) {
   .list-head {
-    grid-template-columns: minmax(200px, 1fr) 108px 78px 240px;
+    grid-template-columns: minmax(200px, 1fr) 108px 78px 280px;
   }
 
   .list-head > span:nth-child(5) {

@@ -39,6 +39,8 @@ let viewRotation = 0
 let baseCameraZ = 24
 let cameraDistance = 0
 let lastFrameTime = 0
+let ringRadius = 12
+let ringRows = 1
 
 const pointer = new THREE.Vector2(-10, -10)
 const textureCache = new Map()
@@ -147,6 +149,17 @@ function createStars() {
   scene.add(stars)
 }
 
+// 按相机 FOV 与画布宽高比计算能完整容纳圆环的距离，避免封面超出显示区域。
+function fitDistance() {
+  if (!camera) return baseCameraZ
+  const tanV = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)
+  const tanH = tanV * Math.max(camera.aspect, 0.2)
+  const halfW = ringRadius + COVER_WIDTH / 2 + 0.8
+  const halfH =
+    (ringRows > 1 ? (COVER_HEIGHT + COVER_GAP) / 2 : 0) + COVER_HEIGHT / 2 + 0.6
+  return Math.max(halfW / tanH, halfH / tanV) * 1.06
+}
+
 function layout() {
   if (!group) return
   disposeItems()
@@ -159,10 +172,15 @@ function layout() {
   const spacing = Math.min(0.42, (Math.PI * 2) / perRow)
   const radius = Math.max(12, (COVER_WIDTH * 1.26) / (2 * Math.sin(spacing / 2)))
 
-  baseCameraZ = radius + 9
+  ringRadius = radius
+  ringRows = rows
+  baseCameraZ = fitDistance()
   cameraDistance = baseCameraZ
   camera.position.z = cameraDistance
   camera.lookAt(0, 0, 0)
+
+  // 距离变大后雾密度相应降低，避免远处的封面被雾吞掉。
+  if (scene?.fog) scene.fog.density = clamp(0.45 / baseCameraZ, 0.008, 0.018)
 
   list.forEach((torrent, index) => {
     const row = index % rows
@@ -195,6 +213,12 @@ function updateSize() {
   renderer.setSize(width, height, false)
   camera.aspect = width / height
   camera.updateProjectionMatrix()
+
+  // 窗口尺寸变化后重新计算适配距离，保持圆环完整可见。
+  if (items.length) {
+    baseCameraZ = fitDistance()
+    cameraDistance = clamp(cameraDistance, baseCameraZ * 0.55, baseCameraZ * 1.65)
+  }
 }
 
 function pickMesh() {

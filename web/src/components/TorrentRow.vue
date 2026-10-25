@@ -7,10 +7,12 @@ import {
   FolderSearch,
   ListTree,
   LoaderCircle,
+  MoreHorizontal,
   Play,
   Star,
 } from 'lucide-vue-next'
 import OpenWithMenu from './OpenWithMenu.vue'
+import TorrentActionsMenu from './TorrentActionsMenu.vue'
 import {
   formatBytes,
   formatDate,
@@ -24,6 +26,7 @@ const props = defineProps({
   parseState: { type: Object, default: null },
   cover: { type: Object, default: null },
   favorite: { type: Boolean, default: false },
+  coverFetching: { type: Boolean, default: false },
   tools: { type: Array, default: () => [] },
   defaultToolId: { type: String, default: 'system' },
   selected: { type: Boolean, default: false },
@@ -36,11 +39,14 @@ const emit = defineEmits([
   'reveal',
   'preview-cover',
   'toggle-favorite',
+  'fetch-cover',
   'manage-tools',
 ])
 
 const menuOpen = ref(false)
 const menuAnchor = ref(null)
+const actionsMenuOpen = ref(false)
+const actionsMenuAnchor = ref(null)
 
 const loading = computed(() => Boolean(props.parseState?.loading))
 const parseError = computed(() => props.parseState?.error || null)
@@ -90,6 +96,11 @@ function openDefault() {
 function toggleMenu(event) {
   menuAnchor.value = event.currentTarget.getBoundingClientRect()
   menuOpen.value = !menuOpen.value
+}
+
+function toggleActionsMenu(event) {
+  actionsMenuAnchor.value = event.currentTarget.getBoundingClientRect()
+  actionsMenuOpen.value = !actionsMenuOpen.value
 }
 
 function selectTool(toolId) {
@@ -227,6 +238,25 @@ function reveal() {
         <FolderSearch :size="16" />
       </button>
 
+      <button
+        class="icon-btn more-btn"
+        type="button"
+        title="更多操作"
+        aria-label="更多操作"
+        :aria-expanded="actionsMenuOpen"
+        @click="toggleActionsMenu"
+      >
+        <MoreHorizontal :size="16" />
+      </button>
+      <TorrentActionsMenu
+        v-if="actionsMenuOpen"
+        :anchor-rect="actionsMenuAnchor"
+        :cover-fetching="coverFetching"
+        :has-cover="Boolean(cover?.cover)"
+        @fetch-cover="emit('fetch-cover', torrent)"
+        @close="actionsMenuOpen = false"
+      />
+
       <span v-if="parseError" class="parse-error" :title="parseError">
         <AlertCircle :size="14" />
       </span>
@@ -237,7 +267,7 @@ function reveal() {
 <style scoped>
 .torrent-row {
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) 128px 118px 86px 142px 258px;
+  grid-template-columns: minmax(260px, 1fr) 128px 118px 86px 142px 298px;
   align-items: center;
   gap: 14px;
   height: 72px;
@@ -562,7 +592,8 @@ function reveal() {
   background: rgba(45, 212, 191, 0.13);
 }
 
-.folder-btn {
+.folder-btn,
+.more-btn {
   width: 32px;
   height: 32px;
 }
@@ -576,7 +607,7 @@ function reveal() {
 
 @media (max-width: 1280px) {
   .torrent-row {
-    grid-template-columns: minmax(240px, 1fr) 118px 86px 132px 248px;
+    grid-template-columns: minmax(240px, 1fr) 118px 86px 132px 288px;
   }
 
   .source-cell {
@@ -586,7 +617,7 @@ function reveal() {
 
 @media (max-width: 900px) {
   .torrent-row {
-    grid-template-columns: minmax(200px, 1fr) 108px 78px 240px;
+    grid-template-columns: minmax(200px, 1fr) 108px 78px 280px;
     gap: 10px;
   }
 

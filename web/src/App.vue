@@ -61,6 +61,7 @@ const parseCache = reactive(new Map())
 const parseStates = reactive(new Map())
 const parsedSummaries = reactive(new Map())
 const covers = reactive(new Map())
+const coverFetching = reactive(new Set())
 
 const filters = reactive({
   query: '',
@@ -675,6 +676,55 @@ async function updateCovers() {
   if (missing > 0) parts.push(`未匹配 ${missing} 个`)
   if (failed > 0) parts.push(`失败 ${failed} 个`)
   notify(`封面更新完成：${parts.join('，')}`, failed > 0 ? 'info' : 'success', { timeout: 6000 })
+}
+
+// 单个种子手动拉取封面与评分（行内「…」菜单触发），允许强制刷新已有数据。
+async function fetchSingleCover(torrent) {
+  if (!torrent?.path || coverFetching.has(torrent.path)) return
+
+  coverFetching.add(torrent.path)
+  try {
+    const existing = covers.get(torrent.path)
+    const name = parsedName(torrent) || torrent.fileName || torrent.path
+
+    // 已有封面但缺评分时，直接用已有页面链接补抓评分。
+    if (existing?.cover && existing.pageUrl && typeof existing.rating !== 'number') {
+      const payload = await api.lookupRating(existing.pageUrl)
+      const rating = typeof payload?.rating === 'number' ? payload.rating : null
+      covers.set(torrent.path, { ...existing, rating })
+      queueCoverSave(torrent.path)
+      await flushCovers()
+      notify(rating === null ? '已刷新，该游戏暂无评分' : `评分已更新：${rating.toFixed(1)}`, 'success')
+      return
+    }
+
+    const payload = await api.searchCover(name)
+    const match = payload?.match
+    if (!match?.cover) {
+      notify('没有找到匹配的封面', 'info')
+      return
+    }
+
+    covers.set(torrent.path, {
+      cover: match.cover,
+      source: match.source || '',
+      title: match.title || '',
+      pageUrl: match.pageUrl || '',
+      query: payload.query || '',
+      rating: typeof match.rating === 'number' ? match.rating : null,
+      updatedAt: Date.now(),
+    })
+    queueCoverSave(torrent.path)
+    await flushCovers()
+    notify(
+      match.rating ? `已更新封面与评分（${match.rating.toFixed(1)}）` : '已更新封面，暂无评分',
+      'success',
+    )
+  } catch (error) {
+    notify(`拉取封面评分失败：${error.message || '请稍后重试'}`, 'error', { timeout: 7000 })
+  } finally {
+    coverFetching.delete(torrent.path)
+  }
 }
 
 function scheduleSave() {
@@ -1413,6 +1463,7 @@ onBeforeUnmount(() => {
             :summaries="parsedSummaries"
             :covers="covers"
             :favorites="favorites"
+            :cover-fetching="coverFetching"
             :tools="tools"
             :default-tool-id="defaultToolId"
             :view-mode="viewMode"
@@ -1426,6 +1477,7 @@ onBeforeUnmount(() => {
             @reveal="handleReveal"
             @preview-cover="openCoverPreview"
             @toggle-favorite="toggleFavorite"
+            @fetch-cover="fetchSingleCover"
             @manage-tools="openTools"
             @browse="chooseFolder"
             @scan="startScan()"
