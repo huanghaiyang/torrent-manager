@@ -6,11 +6,13 @@ import {
   FolderSearch,
   LoaderCircle,
   Magnet,
+  MoreHorizontal,
   Play,
   Radar,
   SearchX,
   Star,
 } from 'lucide-vue-next'
+import TorrentActionsMenu from './TorrentActionsMenu.vue'
 import TorrentRow from './TorrentRow.vue'
 import { formatBytes, sourceLabel } from '../lib/format.js'
 
@@ -253,6 +255,23 @@ function previewCover(torrent) {
     pageUrl: cover.pageUrl || '',
   })
 }
+
+// 网格卡片的「更多」菜单，同一时间只允许打开一个。
+const gridMenuPath = ref('')
+const gridMenuAnchor = ref(null)
+
+function toggleGridMenu(event, torrent) {
+  if (gridMenuPath.value === torrent.path) {
+    gridMenuPath.value = ''
+    return
+  }
+  gridMenuAnchor.value = event.currentTarget.getBoundingClientRect()
+  gridMenuPath.value = torrent.path
+}
+
+function closeGridMenu() {
+  gridMenuPath.value = ''
+}
 </script>
 
 <template>
@@ -336,7 +355,26 @@ function previewCover(torrent) {
               >
                 <FolderSearch :size="13" />
               </button>
+              <button
+                class="grid-action is-icon"
+                type="button"
+                title="更多操作"
+                aria-label="更多操作"
+                :aria-expanded="gridMenuPath === torrent.path"
+                @click="toggleGridMenu($event, torrent)"
+              >
+                <MoreHorizontal :size="14" />
+              </button>
             </div>
+
+            <TorrentActionsMenu
+              v-if="gridMenuPath === torrent.path"
+              :anchor-rect="gridMenuAnchor"
+              :cover-fetching="coverFetching.has(torrent.path)"
+              :has-cover="Boolean(coverOf(torrent)?.cover)"
+              @fetch-cover="emit('fetch-cover', torrent)"
+              @close="closeGridMenu"
+            />
           </div>
 
           <div class="grid-info">
@@ -703,6 +741,12 @@ function previewCover(torrent) {
   border-color: rgba(250, 204, 21, 0.38);
   background: rgba(250, 204, 21, 0.14);
   color: #facc15;
+}
+
+.grid-action.is-icon {
+  width: 27px;
+  justify-content: center;
+  padding: 0;
 }
 
 .grid-info {
